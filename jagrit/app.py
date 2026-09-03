@@ -124,19 +124,21 @@ def load_rrdbnet_checkpoint(pth_filename: str):
     m.eval()
     return m, found_path
 
-# Model A (data.pth)
-model, pth_path = load_rrdbnet_checkpoint("data.pth")
+# Model A (best_model.pth or data.pth fallback)
+model, pth_path = load_rrdbnet_checkpoint("best_model.pth")
 if not model:
-    raise FileNotFoundError("data.pth checkpoint not found in jagrit/ or current directory!")
-print(f"Loaded Model A (data.pth) from {pth_path} on device: {device}")
+    model, pth_path = load_rrdbnet_checkpoint("data.pth")
+if not model:
+    raise FileNotFoundError("Neither best_model.pth nor data.pth checkpoint found in jagrit/ or current directory!")
+print(f"Loaded Model A ({os.path.basename(pth_path)}) from {pth_path} on device: {device}")
 
-# Model B (data120.pth or fallback)
+# Model B (data120.pth or best_model.pth / data.pth fallback)
 model_b, pth_b_path = load_rrdbnet_checkpoint("data120.pth")
 if model_b:
     print(f"Loaded Model B (data120.pth) from {pth_b_path} on device: {device}")
 else:
     model_b = model
-    print(f"[Notice] data120.pth not found yet; Model B using Model A fallback.")
+    print(f"[Notice] data120.pth not found; Model B using Model A ({os.path.basename(pth_path)}) fallback.")
 
 # --- 2. Input Validation Schema ---
 class BBoxRequest(BaseModel):
