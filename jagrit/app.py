@@ -891,8 +891,8 @@ async def compare_models_bbox(req: BBoxRequest):
         return {
             "status": "success",
             "bbox": bbox,
-            "model_a_name": "data.pth",
-            "model_b_name": "data120.pth",
+            "model_a_name": os.path.basename(pth_path),
+            "model_b_name": os.path.basename(pth_b_path) if pth_b_path else "Bicubic Baseline",
             "dimensions": [sr_a.shape[1], sr_a.shape[0]],
             "image_a": encode_bgr_to_base64_png(sr_a),
             "confidence_score_a": conf_score_a,
