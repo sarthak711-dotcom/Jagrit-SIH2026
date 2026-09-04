@@ -8,12 +8,6 @@ const TOOL_LABEL: Record<ToolId, string> = {
   upload: "UPLOAD",
   select: "SELECT",
   layers: "LAYERS",
-  enhance: "ENHANCE",
-  compare: "COMPARE",
-  confidence: "CONFIDENCE",
-  validation: "VALIDATION",
-  analysis: "ANALYSIS",
-  export: "EXPORT",
 }
 
 function fmt(n: number, pad = 3) {

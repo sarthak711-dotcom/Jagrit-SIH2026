@@ -26,7 +26,6 @@ export function RegionPanel({
   onClear,
   onRunSuperRes,
   onRunTemporalChange,
-  onRunModelCompare,
   isProcessing = false,
   statusMessage = "",
 }: {
@@ -42,11 +41,10 @@ export function RegionPanel({
     bounds: { min_lon: number; min_lat: number; max_lon: number; max_lat: number },
     params: { date_from_a: string; date_to_a: string; date_from_b: string; date_to_b: string; mode: "urban" | "water" | "crop" }
   ) => void
-  onRunModelCompare?: (bounds: { min_lon: number; min_lat: number; max_lon: number; max_lat: number }, dates: { date_from: string; date_to: string }) => void
   isProcessing?: boolean
   statusMessage?: string
 }) {
-  const [pipelineMode, setPipelineMode] = useState<"single" | "temporal" | "compare">("single")
+  const [pipelineMode, setPipelineMode] = useState<"single" | "temporal">("single")
   const [analysisPreset, setAnalysisPreset] = useState<"urban" | "water" | "crop">("urban")
 
   // Single date range
@@ -103,11 +101,6 @@ export function RegionPanel({
         date_from_b: `${dateFromB}T00:00:00Z`,
         date_to_b: `${dateToB}T23:59:59Z`,
         mode: analysisPreset,
-      })
-    } else if (pipelineMode === "compare" && onRunModelCompare) {
-      onRunModelCompare(region.bounds, {
-        date_from: `${dateFrom}T00:00:00Z`,
-        date_to: `${dateTo}T23:59:59Z`,
       })
     }
   }
@@ -215,7 +208,7 @@ export function RegionPanel({
         <label className="block font-mono text-[10px] uppercase font-semibold text-muted-foreground">
           Analysis Pipeline Mode:
         </label>
-        <div className="grid grid-cols-3 gap-1 rounded bg-muted/60 p-1 border border-border">
+        <div className="grid grid-cols-2 gap-1 rounded bg-muted/60 p-1 border border-border">
           <button
             type="button"
             onClick={() => setPipelineMode("single")}
@@ -224,7 +217,7 @@ export function RegionPanel({
               : "text-muted-foreground hover:text-foreground"
               }`}
           >
-            Super-Res
+            Super-Res (4x)
           </button>
           <button
             type="button"
@@ -234,17 +227,7 @@ export function RegionPanel({
               : "text-muted-foreground hover:text-foreground"
               }`}
           >
-            Temporal
-          </button>
-          <button
-            type="button"
-            onClick={() => setPipelineMode("compare")}
-            className={`py-1 px-1.5 font-mono text-[10px] rounded transition-colors ${pipelineMode === "compare"
-              ? "bg-amber-600 text-white font-bold shadow"
-              : "text-muted-foreground hover:text-foreground"
-              }`}
-          >
-            Model Compare
+            Temporal Change
           </button>
         </div>
       </div>

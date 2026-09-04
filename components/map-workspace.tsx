@@ -12,7 +12,6 @@ import { LayersPanel, type LayerId, type LayersState } from "@/components/worksp
 import { RegionPanel, type RegionInfo } from "@/components/workspace/panels/region-panel"
 import { SuperResModal, type SuperResResult } from "@/components/workspace/super-res-modal"
 import { TemporalChangeModal, type TemporalResult } from "@/components/workspace/temporal-modal"
-import { ModelCompareModal, type ModelCompareResult } from "@/components/workspace/model-compare-modal"
 
 const INITIAL_CENTER: [number, number] = [20.2961, 85.8245] // Bhubaneswar S2 Demo Region
 const INITIAL_ZOOM = 13
@@ -81,7 +80,6 @@ export function MapWorkspace() {
   const [statusMessage, setStatusMessage] = useState("")
   const [superResResult, setSuperResResult] = useState<SuperResResult | null>(null)
   const [temporalResult, setTemporalResult] = useState<TemporalResult | null>(null)
-  const [modelCompareResult, setModelCompareResult] = useState<ModelCompareResult | null>(null)
 
   useEffect(() => {
     toolRef.current = tool
@@ -405,72 +403,7 @@ export function MapWorkspace() {
     }
   }
 
-  const handleRunModelCompare = async (
-    bounds: { min_lon: number; min_lat: number; max_lon: number; max_lat: number },
-    dates: { date_from: string; date_to: string }
-  ) => {
-    setIsProcessing(true)
-    setStatusMessage("Running Dual Model Benchmark (data.pth vs data120.pth)...")
-    setModelCompareResult(null)
 
-    const payload = {
-      min_lon: bounds.min_lon,
-      min_lat: bounds.min_lat,
-      max_lon: bounds.max_lon,
-      max_lat: bounds.max_lat,
-      date_from: dates.date_from,
-      date_to: dates.date_to,
-    }
-
-    let responseData: any = null
-    let errorMsg = ""
-
-    for (const baseUrl of BACKEND_URLS) {
-      try {
-        setStatusMessage(`Querying Dual Models at ${baseUrl}...`)
-        const res = await fetch(`${baseUrl}/api/compare-models-bbox`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        })
-        if (res.ok) {
-          responseData = await res.json()
-          errorMsg = ""
-          break
-        } else {
-          try {
-            const errJson = await res.json()
-            errorMsg = errJson.detail || res.statusText
-          } catch {
-            errorMsg = `Server error ${res.status}`
-          }
-        }
-      } catch (err: any) {
-        errorMsg = err?.message || "Connection failed"
-      }
-    }
-
-    setIsProcessing(false)
-
-    if (responseData && responseData.status === "success") {
-      setModelCompareResult({
-        status: responseData.status,
-        bbox: responseData.bbox,
-        modelAName: responseData.model_a_name,
-        modelBName: responseData.model_b_name,
-        dimensions: responseData.dimensions,
-        imageA: responseData.image_a,
-        confidenceScoreA: responseData.confidence_score_a,
-        imageB: responseData.image_b,
-        confidenceScoreB: responseData.confidence_score_b,
-        diffMap: responseData.diff_map,
-        discrepancyPct: responseData.discrepancy_pct,
-        inferenceTimeMs: responseData.inference_time_ms,
-      })
-    } else {
-      alert(`Model Comparison Error: ${errorMsg || "Failed to compare models."}`)
-    }
-  }
 
   // Overlay super-resolved high-res PNG onto Leaflet map
   const handleOverlayOnMap = async (result: SuperResResult) => {
@@ -517,27 +450,7 @@ export function MapWorkspace() {
     setTemporalResult(null)
   }
 
-  const handleOverlayModelCompareOnMap = async (imageUri: string, bbox: [number, number, number, number]) => {
-    const L = (await import("leaflet")).default ?? (await import("leaflet"))
-    if (!mapRef.current) return
 
-    const bounds: [[number, number], [number, number]] = [
-      [bbox[1], bbox[0]],
-      [bbox[3], bbox[2]],
-    ]
-
-    if (overlayRef.current) {
-      overlayRef.current.remove()
-    }
-
-    overlayRef.current = L.imageOverlay(imageUri, bounds, {
-      opacity: 0.95,
-      interactive: true,
-    }).addTo(mapRef.current)
-
-    mapRef.current.fitBounds(bounds, { padding: [20, 20], animate: true })
-    setModelCompareResult(null)
-  }
 
   return (
     <main className="relative h-svh w-full overflow-hidden bg-background">
@@ -582,7 +495,6 @@ export function MapWorkspace() {
             onClear={clearSelection}
             onRunSuperRes={handleRunSuperRes}
             onRunTemporalChange={handleRunTemporalChange}
-            onRunModelCompare={handleRunModelCompare}
             isProcessing={isProcessing}
             statusMessage={statusMessage}
           />
@@ -625,15 +537,6 @@ export function MapWorkspace() {
           result={temporalResult}
           onClose={() => setTemporalResult(null)}
           onOverlayOnMap={handleOverlayTemporalOnMap}
-        />
-      )}
-
-      {/* Model Comparison Benchmark Modal */}
-      {modelCompareResult && (
-        <ModelCompareModal
-          result={modelCompareResult}
-          onClose={() => setModelCompareResult(null)}
-          onOverlayOnMap={handleOverlayModelCompareOnMap}
         />
       )}
     </main>
