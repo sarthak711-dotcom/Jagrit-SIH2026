@@ -15,7 +15,9 @@ import {
     Activity,
     ShieldCheck,
     Leaf,
-    FileDown
+    FileDown,
+    Sprout,
+    Droplets
 } from "lucide-react"
 
 export type SuperResResult = {
@@ -37,6 +39,14 @@ export type SuperResResult = {
         water_or_builtup_pct: number
         ndvi_map: string
     }
+    crop_health?: {
+        mean_ndvi: number
+        overlay_image: string
+    }
+    flood_extent?: {
+        water_pct: number
+        overlay_image: string
+    }
     fidelityMetrics?: {
         psnr: number
         ssim: number
@@ -57,9 +67,10 @@ interface SuperResModalProps {
 export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModalProps) {
     const [sliderPosition, setSliderPosition] = useState(50) // percentage 0-100
     const [isDragging, setIsDragging] = useState(false)
-    const [viewMode, setViewMode] = useState<"slider" | "sideBySide" | "confidence" | "ndvi">("slider")
+    const [viewMode, setViewMode] = useState<"slider" | "sideBySide" | "confidence" | "ndvi" | "cropHealth" | "floodExtent">("slider")
     const [isZoomed, setIsZoomed] = useState(false)
     const [isExportingGeoTIFF, setIsExportingGeoTIFF] = useState(false)
+    const [isExportingNpy, setIsExportingNpy] = useState(false)
     const [sharpenStrength, setSharpenStrength] = useState(1.5)
     const [sharpenedImage, setSharpenedImage] = useState(result.upscaledImage)
 
@@ -214,6 +225,40 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
         }
     }
 
+    const handleExportNpy = async () => {
+        setIsExportingNpy(true)
+        try {
+            const payload = {
+                min_lon: result.bbox[0],
+                min_lat: result.bbox[1],
+                max_lon: result.bbox[2],
+                max_lat: result.bbox[3],
+                enable_ensemble: result.enableEnsemble ?? false
+            }
+            const res = await fetch("http://127.0.0.1:8000/api/export-npy", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            })
+            if (!res.ok) {
+                throw new Error(`NPY Export failed: ${res.statusText}`)
+            }
+            const blob = await res.blob()
+            const url = window.URL.createObjectURL(blob)
+            const a = document.createElement("a")
+            a.href = url
+            a.download = `sentinel2_sr_4ch_${Date.now()}.npy`
+            document.body.appendChild(a)
+            a.click()
+            window.URL.revokeObjectURL(url)
+            document.body.removeChild(a)
+        } catch (err: any) {
+            alert(`NPY Export Failed: ${err?.message || err}`)
+        } finally {
+            setIsExportingNpy(false)
+        }
+    }
+
     const confScore = result.confidenceScore ?? 95.8
     const getConfBadgeColor = (score: number) => {
         if (score >= 90) return "bg-emerald-500/20 text-emerald-400 border-emerald-500/40"
@@ -306,6 +351,30 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
                                 >
                                     <Leaf className="h-3.5 w-3.5" />
                                     NDVI Canopy
+                                </button>
+                            )}
+                            {result.crop_health && (
+                                <button
+                                    onClick={() => setViewMode("cropHealth")}
+                                    className={`flex items-center gap-1.5 rounded px-2.5 py-1 font-mono text-xs transition-colors ${viewMode === "cropHealth"
+                                        ? "bg-emerald-600 text-white font-semibold shadow"
+                                        : "text-muted-foreground hover:text-foreground"
+                                        }`}
+                                >
+                                    <Sprout className="h-3.5 w-3.5" />
+                                    Crop Health
+                                </button>
+                            )}
+                            {result.flood_extent && (
+                                <button
+                                    onClick={() => setViewMode("floodExtent")}
+                                    className={`flex items-center gap-1.5 rounded px-2.5 py-1 font-mono text-xs transition-colors ${viewMode === "floodExtent"
+                                        ? "bg-blue-600 text-white font-semibold shadow"
+                                        : "text-muted-foreground hover:text-foreground"
+                                        }`}
+                                >
+                                    <Droplets className="h-3.5 w-3.5" />
+                                    Flood Extent
                                 </button>
                             )}
                         </div>
@@ -506,6 +575,66 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
                                 </div>
                             </div>
                         </div>
+                    ) : viewMode === "cropHealth" && result.crop_health ? (
+                        /* Crop Health 4-Class Classification View */
+                        <div className={`relative flex h-full w-full max-w-4xl flex-col items-center justify-center overflow-hidden rounded-lg border border-emerald-500/40 bg-black/50 ${isZoomed ? "scale-150 transition-transform duration-300" : ""}`}>
+                            <div className="absolute top-3 left-3 z-10 flex items-center gap-2 rounded bg-black/80 px-3 py-1.5 font-mono text-xs font-bold text-emerald-400 border border-emerald-500/40 backdrop-blur-sm">
+                                <Sprout className="h-4 w-4" />
+                                Crop Health Classification &bull; Mean NDVI: {result.crop_health.mean_ndvi}
+                            </div>
+
+                            <img
+                                src={result.crop_health.overlay_image}
+                                alt="Crop Health 4-Class Classification"
+                                className="h-full w-full object-contain"
+                            />
+
+                            {/* 4-Class Color Legend */}
+                            <div className="absolute bottom-3 inset-x-6 z-10 flex flex-wrap items-center justify-between gap-2 rounded bg-black/90 px-4 py-2 font-mono text-[11px] border border-border backdrop-blur-sm">
+                                <div className="flex items-center gap-1.5">
+                                    <span className="h-3 w-3 rounded-sm bg-[#1e7828] border border-emerald-400" />
+                                    <span className="text-emerald-300">Dense / Vigorous (&ge; 0.6)</span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                    <span className="h-3 w-3 rounded-sm bg-[#82c85a] border border-lime-300" />
+                                    <span className="text-lime-300">Moderate / Healthy (0.3 - 0.6)</span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                    <span className="h-3 w-3 rounded-sm bg-[#dcc850] border border-amber-300" />
+                                    <span className="text-amber-300">Stressed / Sparse (0.1 - 0.3)</span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                    <span className="h-3 w-3 rounded-sm bg-[#8c643c] border border-stone-400" />
+                                    <span className="text-stone-300">Bare Soil / Water (&lt; 0.1)</span>
+                                </div>
+                            </div>
+                        </div>
+                    ) : viewMode === "floodExtent" && result.flood_extent ? (
+                        /* Disaster Flood Extent NDWI Mask View */
+                        <div className={`relative flex h-full w-full max-w-4xl flex-col items-center justify-center overflow-hidden rounded-lg border border-blue-500/40 bg-black/50 ${isZoomed ? "scale-150 transition-transform duration-300" : ""}`}>
+                            <div className="absolute top-3 left-3 z-10 flex items-center gap-2 rounded bg-black/80 px-3 py-1.5 font-mono text-xs font-bold text-blue-400 border border-blue-500/40 backdrop-blur-sm">
+                                <Droplets className="h-4 w-4" />
+                                Disaster Assessment: NDWI Flood Extent ({result.flood_extent.water_pct}% Flooded Area)
+                            </div>
+
+                            <img
+                                src={result.flood_extent.overlay_image}
+                                alt="NDWI Flood Extent Mask"
+                                className="h-full w-full object-contain"
+                            />
+
+                            {/* Water / Land Legend */}
+                            <div className="absolute bottom-3 inset-x-6 z-10 flex flex-wrap items-center justify-between gap-2 rounded bg-black/90 px-4 py-2 font-mono text-[11px] border border-border backdrop-blur-sm">
+                                <div className="flex items-center gap-1.5">
+                                    <span className="h-3 w-3 rounded-sm bg-[#1e5adc] border border-blue-400" />
+                                    <span className="text-blue-300">Inundated / Open Water (NDWI &gt; 0.0): <strong>{result.flood_extent.water_pct}%</strong></span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                    <span className="h-3 w-3 rounded-sm bg-[#5a5046] border border-stone-400" />
+                                    <span className="text-stone-300">Dry Ground / Non-Water (NDWI &le; 0.0): <strong>{(100 - result.flood_extent.water_pct).toFixed(1)}%</strong></span>
+                                </div>
+                            </div>
+                        </div>
                     ) : (
                         /* Bayesian MC Dropout Epistemic Uncertainty & Confidence View */
                         <div className={`relative flex h-full w-full max-w-4xl flex-col items-center justify-center overflow-hidden rounded-lg border border-cyan-500/40 bg-black/50 ${isZoomed ? "scale-150 transition-transform duration-300" : ""}`}>
@@ -580,6 +709,14 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
                         >
                             <Layers className="h-4 w-4" />
                             Overlay on Map
+                        </button>
+                        <button
+                            onClick={handleExportNpy}
+                            disabled={isExportingNpy}
+                            className="flex items-center gap-2 rounded-lg border border-purple-500/50 bg-purple-500/20 px-3 py-2 font-mono text-xs font-semibold text-purple-300 transition-all hover:bg-purple-600 hover:text-white shadow-md disabled:opacity-50"
+                        >
+                            <FileDown className="h-4 w-4" />
+                            {isExportingNpy ? "Exporting .npy..." : "Export .npy (4-Band)"}
                         </button>
                         <button
                             onClick={handleDownloadGeoTIFF}

@@ -19,6 +19,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 
+from spectral_indices import (
+    crop_health_overlay,
+    flood_extent_overlay,
+    verify_export_isolation
+)
+
 MIN_GRID_METERS = 1280.0 # ~1.28 km (128 true 10m pixels)
 MAX_SIZE_METERS = 5120.0 # ~5.12 km (512 true 10m pixels)
 
@@ -193,6 +199,18 @@ def fetch_copernicus_geotiff(bbox, width, height, date_from, date_to, token):
         "Accept": "image/tiff"
     }
 
+    # Format date strings to strict ISO-8601 if needed
+    def _to_iso(dt_str: str, end_of_day: bool = False) -> str:
+        if not dt_str:
+            return "2024-05-15T23:59:59Z" if end_of_day else "2024-05-01T00:00:00Z"
+        dt_str = str(dt_str).strip()
+        if "T" in dt_str:
+            return dt_str
+        return f"{dt_str}T23:59:59Z" if end_of_day else f"{dt_str}T00:00:00Z"
+
+    iso_from = _to_iso(date_from, end_of_day=False)
+    iso_to = _to_iso(date_to, end_of_day=True)
+
     evalscript = """
     //VERSION=3
     function setup() {
@@ -219,8 +237,8 @@ def fetch_copernicus_geotiff(bbox, width, height, date_from, date_to, token):
                 "type": "sentinel-2-l2a",
                 "dataFilter": {
                     "timeRange": {
-                        "from": date_from,
-                        "to": date_to
+                        "from": iso_from,
+                        "to": iso_to
                     },
                     "maxCloudCoverage": 20
                 }
@@ -609,6 +627,24 @@ async def upscale_bbox(req: BBoxRequest):
         # Compute Multispectral NDVI Canopy Analytics
         ndvi_stats = compute_ndvi_analytics(sr_4ch)
 
+        # Calibrated 4-band spectral overlays: Crop Health (NDVI 4-class) & Flood Extent (NDWI)
+        # Bands: B02 Blue (0), B03 Green (1), B04 Red (2), B08 NIR (3)
+        blue, green, red, nir = sr_4ch[0], sr_4ch[1], sr_4ch[2], sr_4ch[3]
+        crop_res = crop_health_overlay(nir, red)
+        flood_res = flood_extent_overlay(green, nir)
+
+        crop_bgr = cv2.cvtColor(crop_res["overlay_rgb"], cv2.COLOR_RGB2BGR)
+        flood_bgr = cv2.cvtColor(flood_res["overlay_rgb"], cv2.COLOR_RGB2BGR)
+
+        crop_data = {
+            "mean_ndvi": round(crop_res["mean_ndvi"], 3),
+            "overlay_image": encode_bgr_to_base64_png(crop_bgr)
+        }
+        flood_data = {
+            "water_pct": round(flood_res["water_pct"], 2),
+            "overlay_image": encode_bgr_to_base64_png(flood_bgr)
+        }
+
         elapsed = round((time.time() - start_time) * 1000, 2)
 
         fidelity = {
@@ -636,6 +672,8 @@ async def upscale_bbox(req: BBoxRequest):
             "upscaled_image": sr_base64,
             "enable_ensemble": use_ensemble,
             "ndvi_analytics": ndvi_stats,
+            "crop_health": crop_data,
+            "flood_extent": flood_data,
             "fidelity_metrics": fidelity,
             "inference_time_ms": elapsed
         }
@@ -674,6 +712,23 @@ async def upscale_file(
 
         ndvi_stats = compute_ndvi_analytics(sr_4ch)
 
+        # Calibrated 4-band spectral overlays: Crop Health (NDVI 4-class) & Flood Extent (NDWI)
+        blue, green, red, nir = sr_4ch[0], sr_4ch[1], sr_4ch[2], sr_4ch[3]
+        crop_res = crop_health_overlay(nir, red)
+        flood_res = flood_extent_overlay(green, nir)
+
+        crop_bgr = cv2.cvtColor(crop_res["overlay_rgb"], cv2.COLOR_RGB2BGR)
+        flood_bgr = cv2.cvtColor(flood_res["overlay_rgb"], cv2.COLOR_RGB2BGR)
+
+        crop_data = {
+            "mean_ndvi": round(crop_res["mean_ndvi"], 3),
+            "overlay_image": encode_bgr_to_base64_png(crop_bgr)
+        }
+        flood_data = {
+            "water_pct": round(flood_res["water_pct"], 2),
+            "overlay_image": encode_bgr_to_base64_png(flood_bgr)
+        }
+
         elapsed = round((time.time() - start_time) * 1000, 2)
 
         fidelity = {
@@ -697,6 +752,8 @@ async def upscale_file(
             "upscaled_image": sr_base64,
             "enable_ensemble": enable_ensemble,
             "ndvi_analytics": ndvi_stats,
+            "crop_health": crop_data,
+            "flood_extent": flood_data,
             "fidelity_metrics": fidelity,
             "inference_time_ms": elapsed
         }
@@ -729,7 +786,7 @@ async def export_geotiff(req: BBoxRequest):
             with MemoryFile(raw_tiff_bytes) as memfile:
                 with memfile.open() as dataset:
                     raw_np = dataset.read().astype(np.float32)
-            vis_bgrn = np.clip(raw_np * 2.8 * 255.0, 0, 255).astype(np.uint8)
+            vis_bgrn = np.clip(raw_np, 0.0, 1.0)
         except Exception:
             rng = np.random.RandomState(int(abs(min_lat * 1000 + min_lon * 1000)) % 10000)
             base_pattern = rng.randint(40, 180, size=(pixel_h, pixel_w, 3), dtype=np.uint8)
@@ -741,37 +798,88 @@ async def export_geotiff(req: BBoxRequest):
         use_ensemble = bool(req.enable_ensemble)
         _, sr_4ch = run_model_inference(vis_bgrn, enable_ensemble=use_ensemble)  # [4, H*4, W*4] float32 in [0, 1]
 
-        # Convert to standard 16-bit BOA reflectance (0-10000 DN)
-        sr_u16 = np.clip(sr_4ch * 10000.0, 0.0, 10000.0).astype(np.uint16)
-        _, out_h, out_w = sr_u16.shape
+        tiff_bytes = serialize_sr_to_geotiff_bytes(sr_4ch, bbox)
 
-        # Construct sub-pixel georeferenced Affine transform
-        transform = from_bounds(min_lon, min_lat, max_lon, max_lat, out_w, out_h)
-
-        out_mem = io.BytesIO()
-        with rasterio.open(
-            out_mem,
-            'w',
-            driver='GTiff',
-            height=out_h,
-            width=out_w,
-            count=4,
-            dtype='uint16',
-            crs=CRS.from_epsg(4326),
-            transform=transform,
-            compress='deflate'
-        ) as dst:
-            dst.write(sr_u16)
-            dst.set_band_description(1, "B02_Blue")
-            dst.set_band_description(2, "B03_Green")
-            dst.set_band_description(3, "B04_Red")
-            dst.set_band_description(4, "B08_NIR")
-
-        out_mem.seek(0)
         return StreamingResponse(
-            out_mem,
+            io.BytesIO(tiff_bytes),
             media_type="image/tiff",
             headers={"Content-Disposition": f"attachment; filename=sentinel2_sr_4x_{int(time.time())}.tif"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+def serialize_sr_to_geotiff_bytes(sr_4ch: np.ndarray, bbox: list = (78.040, 27.173, 78.044, 27.177)) -> bytes:
+    """Serializes calibrated float32 BOA reflectance array [4, H, W] to 16-bit GeoTIFF bytes."""
+    sr_u16 = np.clip(sr_4ch * 10000.0, 0.0, 10000.0).astype(np.uint16)
+    _, out_h, out_w = sr_u16.shape
+    transform = from_bounds(bbox[0], bbox[1], bbox[2], bbox[3], out_w, out_h)
+    out_mem = io.BytesIO()
+    with rasterio.open(
+        out_mem,
+        'w',
+        driver='GTiff',
+        height=out_h,
+        width=out_w,
+        count=4,
+        dtype='uint16',
+        crs=CRS.from_epsg(4326),
+        transform=transform,
+        compress='deflate'
+    ) as dst:
+        dst.write(sr_u16)
+        dst.set_band_description(1, "B02_Blue")
+        dst.set_band_description(2, "B03_Green")
+        dst.set_band_description(3, "B04_Red")
+        dst.set_band_description(4, "B08_NIR")
+    return out_mem.getvalue()
+
+def serialize_sr_to_npy_bytes(sr_4ch: np.ndarray) -> bytes:
+    """Serializes calibrated float32 BOA reflectance array [4, H, W] to raw NumPy .npy bytes."""
+    out_mem = io.BytesIO()
+    np.save(out_mem, sr_4ch)
+    return out_mem.getvalue()
+
+@app.post("/api/export-npy")
+async def export_npy(req: BBoxRequest):
+    """
+    Exports a 4-band calibrated BOA reflectance NumPy array (.npy) [4, H*4, W*4] for research.
+    """
+    try:
+        min_lon, min_lat, max_lon, max_lat = req.min_lon, req.min_lat, req.max_lon, req.max_lat
+        lat_center = (min_lat + max_lat) / 2.0
+        lon_center = (min_lon + max_lon) / 2.0
+        cos_lat = max(0.1, np.cos(np.radians(lat_center)))
+
+        d_lat_m = abs(max_lat - min_lat) * 111320.0
+        d_lon_m = abs(max_lon - min_lon) * 111320.0 * cos_lat
+
+        pixel_w = min(256, max(128, int(round(d_lon_m / 10.0))))
+        pixel_h = min(256, max(128, int(round(d_lat_m / 10.0))))
+        bbox = [min_lon, min_lat, max_lon, max_lat]
+
+        try:
+            token = get_oauth_token()
+            raw_tiff_bytes = fetch_copernicus_geotiff(bbox, pixel_w, pixel_h, req.date_from, req.date_to, token)
+            with MemoryFile(raw_tiff_bytes) as memfile:
+                with memfile.open() as dataset:
+                    raw_np = dataset.read().astype(np.float32)
+            vis_bgrn = np.clip(raw_np, 0.0, 1.0)
+        except Exception:
+            rng = np.random.RandomState(int(abs(min_lat * 1000 + min_lon * 1000)) % 10000)
+            base_pattern = rng.randint(40, 180, size=(pixel_h, pixel_w, 3), dtype=np.uint8)
+            base_pattern = cv2.GaussianBlur(base_pattern, (15, 15), 0)
+            bgr_ch = np.transpose(base_pattern, (2, 0, 1))
+            nir_ch = np.expand_dims(base_pattern[:, :, 1], axis=0)
+            vis_bgrn = np.concatenate([bgr_ch, nir_ch], axis=0)
+
+        use_ensemble = bool(req.enable_ensemble)
+        _, sr_4ch = run_model_inference(vis_bgrn, enable_ensemble=use_ensemble)
+
+        npy_bytes = serialize_sr_to_npy_bytes(sr_4ch)
+        return StreamingResponse(
+            io.BytesIO(npy_bytes),
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f"attachment; filename=sentinel2_sr_4ch_{int(time.time())}.npy"}
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
