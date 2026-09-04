@@ -343,7 +343,11 @@ def run_model_inference(vis_bgrn: np.ndarray, enable_ensemble: bool = False, tar
 
     sr_4ch = output_calibrated.squeeze(0).cpu().numpy()  # [4, H*4, W*4]
     sr_img = np.transpose(sr_4ch, (1, 2, 0))  # [H*4, W*4, 4]
-    sr_bgr = (sr_img[:, :, :3] * 255.0).round().astype(np.uint8)
+    if vis_bgrn.dtype == np.uint8:
+        sr_bgr = (sr_img[:, :, :3] * 255.0).round().astype(np.uint8)
+    else:
+        # Match identical 2.5x perceptual display stretch applied to input orig_bgr
+        sr_bgr = np.clip(sr_img[:, :, :3] * 2.5 * 255.0, 0, 255).round().astype(np.uint8)
     return sr_bgr, sr_4ch
 
 def run_model_b_inference(vis_bgrn: np.ndarray, enable_ensemble: bool = False):
@@ -449,7 +453,7 @@ def apply_unsharp_mask(
         return img_bgr
     # Map amount smoothly: standard default 1.5 -> 0.38 boost; custom 0.35 -> 0.35
     detail_boost = amount * 0.25 if amount > 0.6 else amount
-    return apply_display_enhancement(img_bgr, detail_boost=detail_boost, radius=radius, enable_clahe=True)
+    return apply_display_enhancement(img_bgr, detail_boost=detail_boost, radius=radius, enable_clahe=False)
 
 def compute_confidence_map(vis_bgrn: np.ndarray, sr_bgr: np.ndarray, num_passes: int = 6):
     """
