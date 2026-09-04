@@ -16,8 +16,7 @@ import {
     ShieldCheck,
     Leaf,
     FileDown,
-    Sprout,
-    Droplets
+    Sprout
 } from "lucide-react"
 
 export type SuperResResult = {
@@ -43,10 +42,6 @@ export type SuperResResult = {
         mean_ndvi: number
         overlay_image: string
     }
-    flood_extent?: {
-        water_pct: number
-        overlay_image: string
-    }
     fidelityMetrics?: {
         psnr: number
         ssim: number
@@ -67,7 +62,7 @@ interface SuperResModalProps {
 export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModalProps) {
     const [sliderPosition, setSliderPosition] = useState(50) // percentage 0-100
     const [isDragging, setIsDragging] = useState(false)
-    const [viewMode, setViewMode] = useState<"slider" | "sideBySide" | "confidence" | "ndvi" | "cropHealth" | "floodExtent">("slider")
+    const [viewMode, setViewMode] = useState<"slider" | "sideBySide" | "confidence" | "ndvi" | "cropHealth">("slider")
     const [isZoomed, setIsZoomed] = useState(false)
     const [isExportingGeoTIFF, setIsExportingGeoTIFF] = useState(false)
     const [isExportingNpy, setIsExportingNpy] = useState(false)
@@ -365,18 +360,6 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
                                     Crop Health
                                 </button>
                             )}
-                            {result.flood_extent && (
-                                <button
-                                    onClick={() => setViewMode("floodExtent")}
-                                    className={`flex items-center gap-1.5 rounded px-2.5 py-1 font-mono text-xs transition-colors ${viewMode === "floodExtent"
-                                        ? "bg-blue-600 text-white font-semibold shadow"
-                                        : "text-muted-foreground hover:text-foreground"
-                                        }`}
-                                >
-                                    <Droplets className="h-3.5 w-3.5" />
-                                    Flood Extent
-                                </button>
-                            )}
                         </div>
 
                         <button
@@ -606,32 +589,6 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
                                 <div className="flex items-center gap-1.5">
                                     <span className="h-3 w-3 rounded-sm bg-[#8c643c] border border-stone-400" />
                                     <span className="text-stone-300">Bare Soil / Water (&lt; 0.1)</span>
-                                </div>
-                            </div>
-                        </div>
-                    ) : viewMode === "floodExtent" && result.flood_extent ? (
-                        /* Disaster Flood Extent NDWI Mask View */
-                        <div className={`relative flex h-full w-full max-w-4xl flex-col items-center justify-center overflow-hidden rounded-lg border border-blue-500/40 bg-black/50 ${isZoomed ? "scale-150 transition-transform duration-300" : ""}`}>
-                            <div className="absolute top-3 left-3 z-10 flex items-center gap-2 rounded bg-black/80 px-3 py-1.5 font-mono text-xs font-bold text-blue-400 border border-blue-500/40 backdrop-blur-sm">
-                                <Droplets className="h-4 w-4" />
-                                Disaster Assessment: NDWI Flood Extent ({result.flood_extent.water_pct}% Flooded Area)
-                            </div>
-
-                            <img
-                                src={result.flood_extent.overlay_image}
-                                alt="NDWI Flood Extent Mask"
-                                className="h-full w-full object-contain"
-                            />
-
-                            {/* Water / Land Legend */}
-                            <div className="absolute bottom-3 inset-x-6 z-10 flex flex-wrap items-center justify-between gap-2 rounded bg-black/90 px-4 py-2 font-mono text-[11px] border border-border backdrop-blur-sm">
-                                <div className="flex items-center gap-1.5">
-                                    <span className="h-3 w-3 rounded-sm bg-[#1e5adc] border border-blue-400" />
-                                    <span className="text-blue-300">Inundated / Open Water (NDWI &gt; 0.0): <strong>{result.flood_extent.water_pct}%</strong></span>
-                                </div>
-                                <div className="flex items-center gap-1.5">
-                                    <span className="h-3 w-3 rounded-sm bg-[#5a5046] border border-stone-400" />
-                                    <span className="text-stone-300">Dry Ground / Non-Water (NDWI &le; 0.0): <strong>{(100 - result.flood_extent.water_pct).toFixed(1)}%</strong></span>
                                 </div>
                             </div>
                         </div>

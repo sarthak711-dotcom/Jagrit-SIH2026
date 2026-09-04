@@ -21,7 +21,6 @@ from typing import Optional
 
 from spectral_indices import (
     crop_health_overlay,
-    flood_extent_overlay,
     verify_export_isolation
 )
 
@@ -622,7 +621,7 @@ async def upscale_bbox(req: BBoxRequest):
         conf_score, conf_heatmap_bgr = compute_confidence_map(vis_bgrn, sr_bgr)
         conf_base64 = encode_bgr_to_base64_png(conf_heatmap_bgr)
 
-        # Calibrated 4-band spectral overlays: Crop Health (NDVI 4-class) & Flood Extent (NDWI)
+        # Calibrated 4-band spectral overlays: Crop Health (NDVI 4-class)
         # Scaled back by 2.8 to obtain physical BOA reflectance in [0, 1]
         sr_4ch_physical = np.clip(sr_4ch / 2.8, 0.0, 1.0)
         ndvi_stats = compute_ndvi_analytics(sr_4ch_physical)
@@ -630,18 +629,12 @@ async def upscale_bbox(req: BBoxRequest):
         # Bands: B02 Blue (0), B03 Green (1), B04 Red (2), B08 NIR (3)
         blue, green, red, nir = sr_4ch_physical[0], sr_4ch_physical[1], sr_4ch_physical[2], sr_4ch_physical[3]
         crop_res = crop_health_overlay(nir, red)
-        flood_res = flood_extent_overlay(green, nir)
 
         crop_bgr = cv2.cvtColor(crop_res["overlay_rgb"], cv2.COLOR_RGB2BGR)
-        flood_bgr = cv2.cvtColor(flood_res["overlay_rgb"], cv2.COLOR_RGB2BGR)
 
         crop_data = {
             "mean_ndvi": round(crop_res["mean_ndvi"], 3),
             "overlay_image": encode_bgr_to_base64_png(crop_bgr)
-        }
-        flood_data = {
-            "water_pct": round(flood_res["water_pct"], 2),
-            "overlay_image": encode_bgr_to_base64_png(flood_bgr)
         }
 
         elapsed = round((time.time() - start_time) * 1000, 2)
@@ -672,7 +665,6 @@ async def upscale_bbox(req: BBoxRequest):
             "enable_ensemble": use_ensemble,
             "ndvi_analytics": ndvi_stats,
             "crop_health": crop_data,
-            "flood_extent": flood_data,
             "fidelity_metrics": fidelity,
             "inference_time_ms": elapsed
         }
@@ -711,21 +703,15 @@ async def upscale_file(
 
         ndvi_stats = compute_ndvi_analytics(sr_4ch)
 
-        # Calibrated 4-band spectral overlays: Crop Health (NDVI 4-class) & Flood Extent (NDWI)
+        # Calibrated 4-band spectral overlays: Crop Health (NDVI 4-class)
         blue, green, red, nir = sr_4ch[0], sr_4ch[1], sr_4ch[2], sr_4ch[3]
         crop_res = crop_health_overlay(nir, red)
-        flood_res = flood_extent_overlay(green, nir)
 
         crop_bgr = cv2.cvtColor(crop_res["overlay_rgb"], cv2.COLOR_RGB2BGR)
-        flood_bgr = cv2.cvtColor(flood_res["overlay_rgb"], cv2.COLOR_RGB2BGR)
 
         crop_data = {
             "mean_ndvi": round(crop_res["mean_ndvi"], 3),
             "overlay_image": encode_bgr_to_base64_png(crop_bgr)
-        }
-        flood_data = {
-            "water_pct": round(flood_res["water_pct"], 2),
-            "overlay_image": encode_bgr_to_base64_png(flood_bgr)
         }
 
         elapsed = round((time.time() - start_time) * 1000, 2)
@@ -752,7 +738,6 @@ async def upscale_file(
             "enable_ensemble": enable_ensemble,
             "ndvi_analytics": ndvi_stats,
             "crop_health": crop_data,
-            "flood_extent": flood_data,
             "fidelity_metrics": fidelity,
             "inference_time_ms": elapsed
         }

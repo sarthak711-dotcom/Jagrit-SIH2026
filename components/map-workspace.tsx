@@ -326,7 +326,6 @@ export function MapWorkspace() {
         enableEnsemble: responseData.enable_ensemble,
         ndviAnalytics: responseData.ndvi_analytics,
         crop_health: responseData.crop_health,
-        flood_extent: responseData.flood_extent,
         fidelityMetrics: responseData.fidelity_metrics,
         inferenceTimeMs: responseData.inference_time_ms,
       }
