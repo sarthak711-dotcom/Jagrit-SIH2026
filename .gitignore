@@ -19,3 +19,8 @@ __pycache__/
 *.pyc
 *.bak
 jagrit/app_backup.py
+.venv/
+.freebuff/
+scratch/
+checkpoints/
+data/

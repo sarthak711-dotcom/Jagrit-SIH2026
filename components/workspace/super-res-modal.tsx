@@ -13,7 +13,9 @@ import {
     Maximize2,
     Minimize2,
     Activity,
-    ShieldCheck
+    ShieldCheck,
+    Leaf,
+    FileDown
 } from "lucide-react"
 
 export type SuperResResult = {
@@ -26,6 +28,15 @@ export type SuperResResult = {
     confidenceMap?: string
     originalImage: string
     upscaledImage: string
+    enableEnsemble?: boolean
+    ndviAnalytics?: {
+        mean_ndvi: number
+        dense_vegetation_pct: number
+        moderate_vegetation_pct: number
+        sparse_vegetation_pct: number
+        water_or_builtup_pct: number
+        ndvi_map: string
+    }
     inferenceTimeMs: number
 }
 
@@ -38,8 +49,9 @@ interface SuperResModalProps {
 export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModalProps) {
     const [sliderPosition, setSliderPosition] = useState(50) // percentage 0-100
     const [isDragging, setIsDragging] = useState(false)
-    const [viewMode, setViewMode] = useState<"slider" | "sideBySide" | "confidence">("slider")
+    const [viewMode, setViewMode] = useState<"slider" | "sideBySide" | "confidence" | "ndvi">("slider")
     const [isZoomed, setIsZoomed] = useState(false)
+    const [isExportingGeoTIFF, setIsExportingGeoTIFF] = useState(false)
     const [sharpenStrength, setSharpenStrength] = useState(1.5)
     const [sharpenedImage, setSharpenedImage] = useState(result.upscaledImage)
 
@@ -159,6 +171,41 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
         document.body.removeChild(link)
     }
 
+    const handleDownloadGeoTIFF = async () => {
+        if (!result.bbox) return
+        try {
+            setIsExportingGeoTIFF(true)
+            const payload = {
+                min_lon: result.bbox[0],
+                min_lat: result.bbox[1],
+                max_lon: result.bbox[2],
+                max_lat: result.bbox[3],
+                enable_ensemble: result.enableEnsemble ?? false
+            }
+            const res = await fetch("http://127.0.0.1:8000/api/export-geotiff", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            })
+            if (!res.ok) {
+                throw new Error(`Export failed: ${res.statusText}`)
+            }
+            const blob = await res.blob()
+            const url = window.URL.createObjectURL(blob)
+            const a = document.createElement("a")
+            a.href = url
+            a.download = `sentinel2_sr_16bit_geotiff_${Date.now()}.tif`
+            document.body.appendChild(a)
+            a.click()
+            window.URL.revokeObjectURL(url)
+            document.body.removeChild(a)
+        } catch (err: any) {
+            alert(`GeoTIFF Export Failed: ${err?.message || err}`)
+        } finally {
+            setIsExportingGeoTIFF(false)
+        }
+    }
+
     const confScore = result.confidenceScore ?? 95.8
     const getConfBadgeColor = (score: number) => {
         if (score >= 90) return "bg-emerald-500/20 text-emerald-400 border-emerald-500/40"
@@ -184,6 +231,12 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
                                 <span className="rounded bg-primary/20 px-2 py-0.5 font-mono text-[10px] font-semibold text-primary uppercase border border-primary/30">
                                     RRDBNet Model Active
                                 </span>
+                                {result.enableEnsemble && (
+                                    <span className="rounded bg-purple-500/20 px-2 py-0.5 font-mono text-[10px] font-semibold text-purple-300 uppercase border border-purple-500/40 flex items-center gap-1">
+                                        <Sparkles className="h-2.5 w-2.5" />
+                                        8x TTSE Active
+                                    </span>
+                                )}
                                 <span className={`flex items-center gap-1 rounded px-2 py-0.5 font-mono text-[10px] font-bold border ${getConfBadgeColor(confScore)}`}>
                                     <ShieldCheck className="h-3 w-3" />
                                     {confScore}% AI Confidence
@@ -228,6 +281,18 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
                                 >
                                     <Activity className="h-3.5 w-3.5" />
                                     Confidence Heatmap
+                                </button>
+                            )}
+                            {result.ndviAnalytics && (
+                                <button
+                                    onClick={() => setViewMode("ndvi")}
+                                    className={`flex items-center gap-1.5 rounded px-2.5 py-1 font-mono text-xs transition-colors ${viewMode === "ndvi"
+                                        ? "bg-lime-600 text-white font-semibold shadow"
+                                        : "text-muted-foreground hover:text-foreground"
+                                        }`}
+                                >
+                                    <Leaf className="h-3.5 w-3.5" />
+                                    NDVI Canopy
                                 </button>
                             )}
                         </div>
@@ -365,6 +430,40 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
                                 </div>
                             </div>
                         </div>
+                    ) : viewMode === "ndvi" && result.ndviAnalytics ? (
+                        /* NDVI Vegetation Canopy Analytics View */
+                        <div className={`relative flex h-full w-full max-w-4xl flex-col items-center justify-center overflow-hidden rounded-lg border border-lime-500/40 bg-black/50 ${isZoomed ? "scale-150 transition-transform duration-300" : ""}`}>
+                            <div className="absolute top-3 left-3 z-10 flex items-center gap-2 rounded bg-black/80 px-3 py-1.5 font-mono text-xs font-bold text-lime-400 border border-lime-500/40 backdrop-blur-sm">
+                                <Leaf className="h-4 w-4" />
+                                Multispectral NDVI Canopy Health (Mean: {result.ndviAnalytics.mean_ndvi})
+                            </div>
+
+                            <img
+                                src={result.ndviAnalytics.ndvi_map}
+                                alt="Multispectral NDVI Colormap"
+                                className="h-full w-full object-contain"
+                            />
+
+                            {/* NDVI Zonal Health Bar Legend */}
+                            <div className="absolute bottom-3 inset-x-6 z-10 flex flex-wrap items-center justify-between gap-2 rounded bg-black/90 px-4 py-2 font-mono text-[11px] border border-border backdrop-blur-sm">
+                                <div className="flex items-center gap-1.5">
+                                    <span className="h-3 w-3 rounded-full bg-emerald-500 border border-emerald-400" />
+                                    <span className="text-emerald-300">Dense Canopy: <strong>{result.ndviAnalytics.dense_vegetation_pct}%</strong></span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                    <span className="h-3 w-3 rounded-full bg-lime-400 border border-lime-300" />
+                                    <span className="text-lime-300">Moderate: <strong>{result.ndviAnalytics.moderate_vegetation_pct}%</strong></span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                    <span className="h-3 w-3 rounded-full bg-amber-400 border border-amber-300" />
+                                    <span className="text-amber-300">Sparse: <strong>{result.ndviAnalytics.sparse_vegetation_pct}%</strong></span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                    <span className="h-3 w-3 rounded-full bg-blue-400 border border-blue-300" />
+                                    <span className="text-blue-300">Water / Built-up: <strong>{result.ndviAnalytics.water_or_builtup_pct}%</strong></span>
+                                </div>
+                            </div>
+                        </div>
                     ) : (
                         /* Confidence Heatmap View */
                         <div className={`relative flex h-full w-full max-w-4xl flex-col items-center justify-center overflow-hidden rounded-lg border border-emerald-500/40 bg-black/50 ${isZoomed ? "scale-150 transition-transform duration-300" : ""}`}>
@@ -427,6 +526,14 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
                         >
                             <Layers className="h-4 w-4" />
                             Overlay on Map
+                        </button>
+                        <button
+                            onClick={handleDownloadGeoTIFF}
+                            disabled={isExportingGeoTIFF}
+                            className="flex items-center gap-2 rounded-lg border border-emerald-500/50 bg-emerald-500/20 px-4 py-2 font-mono text-xs font-semibold text-emerald-400 transition-all hover:bg-emerald-600 hover:text-white shadow-md disabled:opacity-50"
+                        >
+                            <FileDown className="h-4 w-4" />
+                            {isExportingGeoTIFF ? "Exporting GeoTIFF..." : "Export 16-bit GeoTIFF"}
                         </button>
                         <button
                             onClick={handleDownload}

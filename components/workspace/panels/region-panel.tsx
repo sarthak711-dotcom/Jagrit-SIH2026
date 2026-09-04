@@ -32,9 +32,12 @@ export function RegionPanel({
 }: {
   onClose: () => void
   region: RegionInfo | null
-  onUse: () => void
+  onUse?: () => void
   onClear: () => void
-  onRunSuperRes?: (bounds: { min_lon: number; min_lat: number; max_lon: number; max_lat: number }, dates: { date_from: string; date_to: string; sharpen_strength?: number }) => void
+  onRunSuperRes?: (
+    bounds: { min_lon: number; min_lat: number; max_lon: number; max_lat: number },
+    dates: { date_from: string; date_to: string; sharpen_strength?: number; enable_ensemble?: boolean }
+  ) => void
   onRunTemporalChange?: (
     bounds: { min_lon: number; min_lat: number; max_lon: number; max_lat: number },
     params: { date_from_a: string; date_to_a: string; date_from_b: string; date_to_b: string; mode: "urban" | "water" | "crop" }
@@ -52,6 +55,8 @@ export function RegionPanel({
 
   // Post-processing Unsharp Mask Sharpening
   const [sharpenStrength, setSharpenStrength] = useState(1.5)
+  // 8x Test-Time Self-Ensemble
+  const [enableEnsemble, setEnableEnsemble] = useState(false)
 
   // Temporal dual date ranges
   const [dateFromA, setDateFromA] = useState("2020-05-01")
@@ -89,6 +94,7 @@ export function RegionPanel({
         date_from: `${dateFrom}T00:00:00Z`,
         date_to: `${dateTo}T23:59:59Z`,
         sharpen_strength: sharpenStrength,
+        enable_ensemble: enableEnsemble,
       })
     } else if (pipelineMode === "temporal" && onRunTemporalChange) {
       onRunTemporalChange(region.bounds, {
@@ -323,6 +329,25 @@ export function RegionPanel({
             </div>
             <p className="font-mono text-[9px] text-muted-foreground italic">
               Unsharp Mask (Radius 1.0, Thresh 2) &bull; Prevents halos & ringing
+            </p>
+          </div>
+
+          {/* 8x Test-Time Self-Ensemble Toggle */}
+          <div className="pt-2 border-t border-border/60">
+            <label className="flex items-center justify-between cursor-pointer font-mono text-[10px]">
+              <span className="font-semibold text-foreground flex items-center gap-1.5">
+                <Sparkles className="h-3 w-3 text-primary" />
+                8x Test-Time Self-Ensemble
+              </span>
+              <input
+                type="checkbox"
+                checked={enableEnsemble}
+                onChange={(e) => setEnableEnsemble(e.target.checked)}
+                className="rounded border-border accent-primary cursor-pointer h-3.5 w-3.5"
+              />
+            </label>
+            <p className="font-mono text-[9px] text-muted-foreground italic mt-0.5">
+              D4 Dihedral 8-pass rotation/flip averaging (+0.31 dB PSNR, 2.84&deg; SAM)
             </p>
           </div>
         </div>

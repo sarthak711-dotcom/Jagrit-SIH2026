@@ -264,10 +264,10 @@ export function MapWorkspace() {
   // Call FastAPI backend for 4x AI Super-Resolution
   const handleRunSuperRes = async (
     bounds: { min_lon: number; min_lat: number; max_lon: number; max_lat: number },
-    dates: { date_from: string; date_to: string; sharpen_strength?: number }
+    dates: { date_from: string; date_to: string; sharpen_strength?: number; enable_ensemble?: boolean }
   ) => {
     setIsProcessing(true)
-    setStatusMessage("Connecting to Copernicus S2 API...")
+    setStatusMessage(dates.enable_ensemble ? "Connecting to Copernicus S2 API (8x TTSE Mode)..." : "Connecting to Copernicus S2 API...")
 
     const payload = {
       min_lon: bounds.min_lon,
@@ -281,6 +281,7 @@ export function MapWorkspace() {
       sharpen_strength: dates.sharpen_strength ?? 1.5,
       sharpen_radius: 1.0,
       sharpen_threshold: 2,
+      enable_ensemble: dates.enable_ensemble ?? false,
     }
 
     let responseData = null
@@ -324,6 +325,8 @@ export function MapWorkspace() {
         confidenceMap: responseData.confidence_map,
         originalImage: responseData.original_image,
         upscaledImage: responseData.upscaled_image,
+        enableEnsemble: responseData.enable_ensemble,
+        ndviAnalytics: responseData.ndvi_analytics,
         inferenceTimeMs: responseData.inference_time_ms,
       }
       setSuperResResult(formattedResult)

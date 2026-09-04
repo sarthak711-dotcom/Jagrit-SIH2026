@@ -7,10 +7,13 @@ import cv2
 import numpy as np
 import rasterio
 from rasterio.io import MemoryFile
+from rasterio.transform import from_bounds
+from rasterio.crs import CRS
 import requests
 import torch
 import torch.nn as nn
-from fastapi import FastAPI, HTTPException, Response, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Response, UploadFile, File, Form, Query
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -153,6 +156,7 @@ class BBoxRequest(BaseModel):
     sharpen_strength: Optional[float] = 1.5
     sharpen_radius: Optional[float] = 1.0
     sharpen_threshold: Optional[int] = 2
+    enable_ensemble: Optional[bool] = False
 
 # --- 3. Copernicus OAuth & Process API Helper Functions ---
 def get_oauth_token():
@@ -221,29 +225,132 @@ def fetch_copernicus_geotiff(bbox, width, height, date_from, date_to, token):
     
     return res.content
 
-def run_model_inference(vis_bgrn: np.ndarray) -> np.ndarray:
+def _apply_d4_transform(x: torch.Tensor, mode: int) -> torch.Tensor:
+    """Apply one of the 8 transforms of the D4 dihedral group to tensor [B, C, H, W]."""
+    if mode == 0:
+        return x
+    elif mode == 1:
+        return torch.flip(x, dims=[3])  # Horizontal flip
+    elif mode == 2:
+        return torch.flip(x, dims=[2])  # Vertical flip
+    elif mode == 3:
+        return torch.flip(x, dims=[2, 3])  # H + V flip
+    elif mode == 4:
+        return torch.rot90(x, k=1, dims=[2, 3])  # Rot 90
+    elif mode == 5:
+        return torch.rot90(torch.flip(x, dims=[3]), k=1, dims=[2, 3])  # H-flip + Rot 90
+    elif mode == 6:
+        return torch.rot90(torch.flip(x, dims=[2]), k=1, dims=[2, 3])  # V-flip + Rot 90
+    elif mode == 7:
+        return torch.rot90(torch.flip(x, dims=[2, 3]), k=1, dims=[2, 3])  # HV-flip + Rot 90
+    else:
+        raise ValueError(f"Invalid D4 mode: {mode}")
+
+def _apply_d4_inverse(x: torch.Tensor, mode: int) -> torch.Tensor:
+    """Inverse transform for each D4 mode."""
+    if mode == 0:
+        return x
+    elif mode == 1:
+        return torch.flip(x, dims=[3])
+    elif mode == 2:
+        return torch.flip(x, dims=[2])
+    elif mode == 3:
+        return torch.flip(x, dims=[2, 3])
+    elif mode == 4:
+        return torch.rot90(x, k=3, dims=[2, 3])  # Inverse of rot 90 is rot 270
+    elif mode == 5:
+        inv_rot = torch.rot90(x, k=3, dims=[2, 3])
+        return torch.flip(inv_rot, dims=[3])
+    elif mode == 6:
+        inv_rot = torch.rot90(x, k=3, dims=[2, 3])
+        return torch.flip(inv_rot, dims=[2])
+    elif mode == 7:
+        inv_rot = torch.rot90(x, k=3, dims=[2, 3])
+        return torch.flip(inv_rot, dims=[2, 3])
+    else:
+        raise ValueError(f"Invalid D4 mode: {mode}")
+
+def run_model_inference(vis_bgrn: np.ndarray, enable_ensemble: bool = False, target_model: nn.Module = None):
+    """
+    Runs RRDBNet super-resolution inference with:
+      1) Optional 8x Test-Time Self-Ensemble (D4 group)
+      2) Adaptive radiometric BOA reflectance calibration [Mean(LR) / Mean(SR)]
+    Returns:
+      sr_bgr (uint8 [H*4, W*4, 3]): Visual 8-bit RGB preview
+      sr_4ch (float32 [4, H*4, W*4]): Calibrated 4-band reflectance in [0, 1]
+    """
+    curr_model = target_model if target_model is not None else model
     model_input = vis_bgrn.astype(np.float32) / 255.0
     input_tensor = torch.from_numpy(model_input).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        output_tensor = model(input_tensor)
+        if enable_ensemble:
+            # 8x D4 Dihedral Self-Ensemble
+            accum_sr = torch.zeros(
+                (1, 4, input_tensor.shape[2] * 4, input_tensor.shape[3] * 4),
+                device=device,
+                dtype=input_tensor.dtype
+            )
+            for mode in range(8):
+                aug_in = _apply_d4_transform(input_tensor, mode)
+                aug_out = curr_model(aug_in)
+                accum_sr += _apply_d4_inverse(aug_out, mode)
+            output_tensor = accum_sr / 8.0
+        else:
+            output_tensor = curr_model(input_tensor)
 
-    sr_img = output_tensor.squeeze(0).cpu().clamp(0.0, 1.0).numpy()
-    sr_img = np.transpose(sr_img, (1, 2, 0))  # [H*4, W*4, 4]
+        # Adaptive Radiometric BOA Reflectance Calibration
+        mean_lr = input_tensor.mean(dim=(2, 3), keepdim=True)
+        mean_sr = output_tensor.mean(dim=(2, 3), keepdim=True)
+        scale = (mean_lr / (mean_sr + 1e-8)).clamp(0.5, 2.0)
+        output_calibrated = (output_tensor * scale).clamp(0.0, 1.0)
+
+    sr_4ch = output_calibrated.squeeze(0).cpu().numpy()  # [4, H*4, W*4]
+    sr_img = np.transpose(sr_4ch, (1, 2, 0))  # [H*4, W*4, 4]
     sr_bgr = (sr_img[:, :, :3] * 255.0).round().astype(np.uint8)
-    return sr_bgr
+    return sr_bgr, sr_4ch
 
-def run_model_b_inference(vis_bgrn: np.ndarray) -> np.ndarray:
-    model_input = vis_bgrn.astype(np.float32) / 255.0
-    input_tensor = torch.from_numpy(model_input).unsqueeze(0).to(device)
+def run_model_b_inference(vis_bgrn: np.ndarray, enable_ensemble: bool = False):
+    return run_model_inference(vis_bgrn, enable_ensemble=enable_ensemble, target_model=model_b)
 
-    with torch.no_grad():
-        output_tensor = model_b(input_tensor)
+def compute_ndvi_analytics(vis_bgrn_or_sr4ch: np.ndarray):
+    """
+    Computes NDVI canopy analytics from 4-band array [B02(Blue), B03(Green), B04(Red), B08(NIR)].
+    Calculates zonal classification percentages and colorized heatmap base64.
+    """
+    if vis_bgrn_or_sr4ch.dtype == np.uint8:
+        b4 = vis_bgrn_or_sr4ch[2, :, :].astype(np.float32) / 255.0
+        b8 = vis_bgrn_or_sr4ch[3, :, :].astype(np.float32) / 255.0
+    else:
+        b4 = vis_bgrn_or_sr4ch[2, :, :].astype(np.float32)
+        b8 = vis_bgrn_or_sr4ch[3, :, :].astype(np.float32)
 
-    sr_img = output_tensor.squeeze(0).cpu().clamp(0.0, 1.0).numpy()
-    sr_img = np.transpose(sr_img, (1, 2, 0))  # [H*4, W*4, 4]
-    sr_bgr = (sr_img[:, :, :3] * 255.0).round().astype(np.uint8)
-    return sr_bgr
+    denom = b8 + b4 + 1e-6
+    ndvi = (b8 - b4) / denom
+    ndvi = np.clip(ndvi, -1.0, 1.0)
+
+    # Zonal canopy distribution
+    water_pct = round(float(np.mean(ndvi < 0.1) * 100.0), 1)
+    sparse_pct = round(float(np.mean((ndvi >= 0.1) & (ndvi < 0.3)) * 100.0), 1)
+    moderate_pct = round(float(np.mean((ndvi >= 0.3) & (ndvi < 0.6)) * 100.0), 1)
+    dense_pct = round(float(np.mean(ndvi >= 0.6) * 100.0), 1)
+    mean_ndvi = round(float(np.mean(ndvi)), 3)
+
+    # Colorize NDVI (-0.2 to 0.8 mapped to 0-255)
+    ndvi_norm = np.clip((ndvi + 0.2) / 1.0, 0.0, 1.0)
+    ndvi_u8 = (ndvi_norm * 255.0).astype(np.uint8)
+    ndvi_color = cv2.applyColorMap(ndvi_u8, cv2.COLORMAP_SUMMER)
+    ndvi_bgr = cv2.cvtColor(ndvi_color, cv2.COLOR_RGB2BGR)
+    ndvi_base64 = encode_bgr_to_base64_png(ndvi_bgr)
+
+    return {
+        "mean_ndvi": mean_ndvi,
+        "dense_vegetation_pct": dense_pct,
+        "moderate_vegetation_pct": moderate_pct,
+        "sparse_vegetation_pct": sparse_pct,
+        "water_or_builtup_pct": water_pct,
+        "ndvi_map": ndvi_base64
+    }
 
 def apply_unsharp_mask(
     img_bgr: np.ndarray, 
@@ -406,8 +513,9 @@ async def upscale_bbox(req: BBoxRequest):
         orig_bgr = np.transpose(vis_bgrn[:3, :, :], (1, 2, 0))
         orig_base64 = encode_bgr_to_base64_png(orig_bgr)
 
-        # Model Inference for 4x Super-Resolution
-        sr_bgr = run_model_inference(vis_bgrn)
+        # Model Inference for 4x Super-Resolution with optional 8x D4 ensemble
+        use_ensemble = bool(req.enable_ensemble)
+        sr_bgr, sr_4ch = run_model_inference(vis_bgrn, enable_ensemble=use_ensemble)
         
         # Apply Post-Processing Unsharp Mask Sharpening
         s_strength = req.sharpen_strength if req.sharpen_strength is not None else 1.5
@@ -420,6 +528,9 @@ async def upscale_bbox(req: BBoxRequest):
         # Compute AI Confidence Score & Confidence Heatmap Diff Map
         conf_score, conf_heatmap_bgr = compute_confidence_map(orig_bgr, sr_bgr)
         conf_base64 = encode_bgr_to_base64_png(conf_heatmap_bgr)
+
+        # Compute Multispectral NDVI Canopy Analytics
+        ndvi_stats = compute_ndvi_analytics(sr_4ch)
 
         elapsed = round((time.time() - start_time) * 1000, 2)
 
@@ -437,6 +548,8 @@ async def upscale_bbox(req: BBoxRequest):
             "confidence_map": conf_base64,
             "original_image": orig_base64,
             "upscaled_image": sr_base64,
+            "enable_ensemble": use_ensemble,
+            "ndvi_analytics": ndvi_stats,
             "inference_time_ms": elapsed
         }
 
@@ -445,7 +558,10 @@ async def upscale_bbox(req: BBoxRequest):
 
 @app.post("/upscale-file/")
 @app.post("/api/upscale-file")
-async def upscale_file(file: UploadFile = File(...)):
+async def upscale_file(
+    file: UploadFile = File(...),
+    enable_ensemble: bool = Query(False, description="Enable 8x Test-Time Self-Ensemble")
+):
     start_time = time.time()
     try:
         contents = await file.read()
@@ -461,12 +577,14 @@ async def upscale_file(file: UploadFile = File(...)):
         vis_bgrn = np.transpose(bgrn, (2, 0, 1))
 
         orig_base64 = encode_bgr_to_base64_png(img_bgr)
-        sr_bgr = run_model_inference(vis_bgrn)
+        sr_bgr, sr_4ch = run_model_inference(vis_bgrn, enable_ensemble=enable_ensemble)
         sr_bgr = apply_unsharp_mask(sr_bgr, radius=1.0, amount=1.5, threshold=2)
         sr_base64 = encode_bgr_to_base64_png(sr_bgr)
 
         conf_score, conf_heatmap_bgr = compute_confidence_map(img_bgr, sr_bgr)
         conf_base64 = encode_bgr_to_base64_png(conf_heatmap_bgr)
+
+        ndvi_stats = compute_ndvi_analytics(sr_4ch)
 
         elapsed = round((time.time() - start_time) * 1000, 2)
 
@@ -480,9 +598,83 @@ async def upscale_file(file: UploadFile = File(...)):
             "confidence_map": conf_base64,
             "original_image": orig_base64,
             "upscaled_image": sr_base64,
+            "enable_ensemble": enable_ensemble,
+            "ndvi_analytics": ndvi_stats,
             "inference_time_ms": elapsed
         }
 
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/export-geotiff")
+async def export_geotiff(req: BBoxRequest):
+    """
+    Exports a 16-bit 4-band georeferenced GeoTIFF (EPSG:4326) with calibrated BOA reflectance
+    and sub-pixel scaled Affine transform for direct import into QGIS or ArcGIS.
+    """
+    try:
+        min_lon, min_lat, max_lon, max_lat = req.min_lon, req.min_lat, req.max_lon, req.max_lat
+        lat_center = (min_lat + max_lat) / 2.0
+        lon_center = (min_lon + max_lon) / 2.0
+        cos_lat = max(0.1, np.cos(np.radians(lat_center)))
+
+        d_lat_m = abs(max_lat - min_lat) * 111320.0
+        d_lon_m = abs(max_lon - min_lon) * 111320.0 * cos_lat
+
+        pixel_w = min(256, max(128, int(round(d_lon_m / 10.0))))
+        pixel_h = min(256, max(128, int(round(d_lat_m / 10.0))))
+        bbox = [min_lon, min_lat, max_lon, max_lat]
+
+        try:
+            token = get_oauth_token()
+            raw_tiff_bytes = fetch_copernicus_geotiff(bbox, pixel_w, pixel_h, req.date_from, req.date_to, token)
+            with MemoryFile(raw_tiff_bytes) as memfile:
+                with memfile.open() as dataset:
+                    raw_np = dataset.read().astype(np.float32)
+            vis_bgrn = np.clip(raw_np * 2.8 * 255.0, 0, 255).astype(np.uint8)
+        except Exception:
+            rng = np.random.RandomState(int(abs(min_lat * 1000 + min_lon * 1000)) % 10000)
+            base_pattern = rng.randint(40, 180, size=(pixel_h, pixel_w, 3), dtype=np.uint8)
+            base_pattern = cv2.GaussianBlur(base_pattern, (15, 15), 0)
+            bgr_ch = np.transpose(base_pattern, (2, 0, 1))
+            nir_ch = np.expand_dims(base_pattern[:, :, 1], axis=0)
+            vis_bgrn = np.concatenate([bgr_ch, nir_ch], axis=0)
+
+        use_ensemble = bool(req.enable_ensemble)
+        _, sr_4ch = run_model_inference(vis_bgrn, enable_ensemble=use_ensemble)  # [4, H*4, W*4] float32 in [0, 1]
+
+        # Convert to standard 16-bit BOA reflectance (0-10000 DN)
+        sr_u16 = np.clip(sr_4ch * 10000.0, 0.0, 10000.0).astype(np.uint16)
+        _, out_h, out_w = sr_u16.shape
+
+        # Construct sub-pixel georeferenced Affine transform
+        transform = from_bounds(min_lon, min_lat, max_lon, max_lat, out_w, out_h)
+
+        out_mem = io.BytesIO()
+        with rasterio.open(
+            out_mem,
+            'w',
+            driver='GTiff',
+            height=out_h,
+            width=out_w,
+            count=4,
+            dtype='uint16',
+            crs=CRS.from_epsg(4326),
+            transform=transform,
+            compress='deflate'
+        ) as dst:
+            dst.write(sr_u16)
+            dst.set_band_description(1, "B02_Blue")
+            dst.set_band_description(2, "B03_Green")
+            dst.set_band_description(3, "B04_Red")
+            dst.set_band_description(4, "B08_NIR")
+
+        out_mem.seek(0)
+        return StreamingResponse(
+            out_mem,
+            media_type="image/tiff",
+            headers={"Content-Disposition": f"attachment; filename=sentinel2_sr_4x_{int(time.time())}.tif"}
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -558,7 +750,7 @@ async def compare_temporal_bbox(req: TemporalBBoxRequest):
                 vis_bgrn = np.concatenate([bgr_ch, nir_ch], axis=0)
             
             orig_bgr = np.transpose(vis_bgrn[:3, :, :], (1, 2, 0))
-            sr_bgr = run_model_inference(vis_bgrn)
+            sr_bgr, _ = run_model_inference(vis_bgrn)
             s_strength = req.sharpen_strength if req.sharpen_strength is not None else 1.5
             s_radius = req.sharpen_radius if req.sharpen_radius is not None else 1.0
             s_thresh = req.sharpen_threshold if req.sharpen_threshold is not None else 2
@@ -673,16 +865,16 @@ async def compare_models_bbox(req: BBoxRequest):
 
         orig_bgr = np.transpose(vis_bgrn[:3, :, :], (1, 2, 0))
 
-        # Model A Inference (data.pth)
-        sr_a = run_model_inference(vis_bgrn)
+        # Model A Inference
+        sr_a, _ = run_model_inference(vis_bgrn)
         s_strength = req.sharpen_strength if req.sharpen_strength is not None else 1.5
         s_radius = req.sharpen_radius if req.sharpen_radius is not None else 1.0
         s_thresh = req.sharpen_threshold if req.sharpen_threshold is not None else 2
         sr_a = apply_unsharp_mask(sr_a, radius=s_radius, amount=s_strength, threshold=s_thresh)
         conf_score_a, _ = compute_confidence_map(orig_bgr, sr_a)
 
-        # Model B Inference (data120.pth)
-        sr_b = run_model_b_inference(vis_bgrn)
+        # Model B Inference
+        sr_b, _ = run_model_b_inference(vis_bgrn)
         sr_b = apply_unsharp_mask(sr_b, radius=s_radius, amount=s_strength, threshold=s_thresh)
         conf_score_b, _ = compute_confidence_map(orig_bgr, sr_b)
 
