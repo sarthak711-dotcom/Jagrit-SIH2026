@@ -327,6 +327,7 @@ export function MapWorkspace() {
         upscaledImage: responseData.upscaled_image,
         enableEnsemble: responseData.enable_ensemble,
         ndviAnalytics: responseData.ndvi_analytics,
+        fidelityMetrics: responseData.fidelity_metrics,
         inferenceTimeMs: responseData.inference_time_ms,
       }
       setSuperResResult(formattedResult)

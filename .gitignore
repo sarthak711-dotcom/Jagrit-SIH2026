@@ -23,4 +23,5 @@ jagrit/app_backup.py
 .freebuff/
 scratch/
 checkpoints/
+*.tsbuildinfo
 data/
