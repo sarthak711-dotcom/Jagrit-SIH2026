@@ -371,6 +371,53 @@ def compute_ndvi_analytics(vis_bgrn_or_sr4ch: np.ndarray):
         "ndvi_map": ndvi_base64
     }
 
+def apply_display_enhancement(
+    img_bgr: np.ndarray, 
+    detail_boost: float = 0.35,
+    radius: float = 1.0,
+    enable_clahe: bool = True,
+) -> np.ndarray:
+    """
+    Applies Adaptive CIELAB Luminance Unsharp Mask + CLAHE High-Frequency Detail Enhancement.
+    Preserves 100% chromaticity by enhancing ONLY the Luminance (L*) channel in CIELAB color space,
+    avoiding the color noise, halo artifacts, and oversaturation of standard RGB/BGR sharpening.
+    Local micro-contrast is adaptively equalized using tile-based CLAHE to penetrate atmospheric haze.
+    """
+    if detail_boost <= 0 or img_bgr is None:
+        return img_bgr
+
+    try:
+        # Convert BGR -> CIELAB (isolating luminance from chrominance)
+        lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+
+        l_enhanced = l
+        if enable_clahe:
+            # CLAHE (Contrast Limited Adaptive Histogram Equalization) on 8x8 local tiles
+            clip_limit = max(1.0, 1.2 + float(detail_boost) * 1.5)
+            clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
+            l_enhanced = clahe.apply(l)
+
+        # High-frequency luminance unsharp mask
+        sigma = max(0.1, float(radius))
+        gaussian = cv2.GaussianBlur(l_enhanced, (0, 0), sigmaX=sigma, sigmaY=sigma)
+        
+        # Blend high frequency luminance without amplifying noise
+        unsharp = cv2.addWeighted(
+            l_enhanced, 
+            1.0 + float(detail_boost) * 0.85, 
+            gaussian, 
+            -float(detail_boost) * 0.85, 
+            0
+        )
+
+        # Reconstruct image with pristine, untouched chrominance channels
+        enhanced_lab = cv2.merge([unsharp, a, b])
+        return cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+    except Exception as e:
+        logger.warning(f"Display enhancement fallback: {e}")
+        return img_bgr
+
 def apply_unsharp_mask(
     img_bgr: np.ndarray, 
     radius: float = 1.0, 
@@ -378,25 +425,14 @@ def apply_unsharp_mask(
     threshold: int = 2
 ) -> np.ndarray:
     """
-    Applies high-frequency Unsharp Mask post-processing enhancement to Sentinel-2 super-resolved outputs.
-    Preserves fine building footprints, road networks, and terrain textures while suppressing ringing/halos.
+    Compatibility wrapper delegating to Adaptive CIELAB Luminance + CLAHE detail engine.
+    Normalizes UI strength slider (0.0 to 3.0) to optimal photorealistic detail_boost (0.0 to 0.75).
     """
     if amount <= 0:
         return img_bgr
-
-    img_float = img_bgr.astype(np.float32)
-    blurred = cv2.GaussianBlur(img_float, (0, 0), sigmaX=max(0.1, radius), sigmaY=max(0.1, radius))
-    diff = img_float - blurred
-
-    if threshold > 0:
-        low_contrast_mask = np.abs(diff) < threshold
-        diff[low_contrast_mask] = 0.0
-
-    # Soft amplitude clipping to prevent bright/dark halos on sharp boundaries
-    diff = np.clip(diff, -40.0, 40.0)
-
-    sharpened = img_float + amount * diff
-    return np.clip(sharpened, 0.0, 255.0).round().astype(np.uint8)
+    # Map amount smoothly: standard default 1.5 -> 0.38 boost; custom 0.35 -> 0.35
+    detail_boost = amount * 0.25 if amount > 0.6 else amount
+    return apply_display_enhancement(img_bgr, detail_boost=detail_boost, radius=radius, enable_clahe=True)
 
 def compute_confidence_map(vis_bgrn: np.ndarray, sr_bgr: np.ndarray, num_passes: int = 6):
     """

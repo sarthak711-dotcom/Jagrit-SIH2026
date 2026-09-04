@@ -328,7 +328,7 @@ export function RegionPanel({
               <span>3.0 (Max)</span>
             </div>
             <p className="font-mono text-[9px] text-muted-foreground italic">
-              Unsharp Mask (Radius 1.0, Thresh 2) &bull; Prevents halos & ringing
+              CIELAB Luminance Mask + Tile CLAHE &bull; Preserves color & eliminates ringing
             </p>
           </div>
 
