@@ -36,7 +36,7 @@ export function StartScreen({ onStart }: { onStart: () => void }) {
         </div>
 
         <h1 className="font-mono text-4xl font-semibold tracking-[0.18em] text-foreground sm:text-6xl">
-          EARTHINTEL
+          JAGRIT
         </h1>
 
         <p className="mt-5 max-w-md text-pretty text-base text-foreground/80 sm:text-lg">
@@ -44,7 +44,7 @@ export function StartScreen({ onStart }: { onStart: () => void }) {
         </p>
 
         <p className="mt-2 font-mono text-sm tracking-wide text-muted-foreground">
-          Sentinel-2 10 m {"->"} {"<"}4 m
+          Sentinel-2 10 m {"->"} 2.5 m
         </p>
 
         <button

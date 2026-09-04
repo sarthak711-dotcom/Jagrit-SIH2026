@@ -10,9 +10,9 @@ const jetbrainsMono = JetBrains_Mono({
 })
 
 export const metadata: Metadata = {
-  title: 'EarthIntel — Satellite Super-Resolution & Analysis',
+  title: 'Jagrit — Satellite Super-Resolution & Analysis',
   description:
-    'EarthIntel enhances Sentinel-2 imagery from 10 m to below 4 m for Earth-observation and geospatial analysis.',
+    'Jagrit enhances Sentinel-2 imagery from 10 m to 2.5 m for Earth-observation and geospatial analysis.',
   generator: 'v0.app',
   icons: {
     icon: [

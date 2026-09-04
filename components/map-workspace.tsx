@@ -463,7 +463,7 @@ export function MapWorkspace() {
         <div className="pointer-events-auto flex items-center gap-2 border border-border bg-popover/90 px-3 py-2 backdrop-blur-sm shadow-md">
           <span className="h-2 w-2 rounded-full bg-primary animate-ping" />
           <span className="font-mono text-xs font-semibold tracking-[0.2em] text-foreground">
-            EARTHINTEL S2-SUPERRES
+            JAGRIT S2-SUPERRES
           </span>
         </div>
         {imageLoaded && (
