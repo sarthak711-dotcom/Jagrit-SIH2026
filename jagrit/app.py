@@ -174,7 +174,7 @@ class BBoxRequest(BaseModel):
     height: Optional[int] = 256
     date_from: Optional[str] = "2024-05-01T00:00:00Z"
     date_to: Optional[str] = "2024-05-15T23:59:59Z"
-    sharpen_strength: Optional[float] = 1.8
+    sharpen_strength: Optional[float] = 1.5
     sharpen_radius: Optional[float] = 1.0
     sharpen_threshold: Optional[int] = 2
     enable_ensemble: Optional[bool] = False
@@ -343,11 +343,7 @@ def run_model_inference(vis_bgrn: np.ndarray, enable_ensemble: bool = False, tar
 
     sr_4ch = output_calibrated.squeeze(0).cpu().numpy()  # [4, H*4, W*4]
     sr_img = np.transpose(sr_4ch, (1, 2, 0))  # [H*4, W*4, 4]
-    if vis_bgrn.dtype == np.uint8:
-        sr_bgr = (sr_img[:, :, :3] * 255.0).round().astype(np.uint8)
-    else:
-        # Match identical 2.5x perceptual display stretch applied to input orig_bgr
-        sr_bgr = np.clip(sr_img[:, :, :3] * 2.5 * 255.0, 0, 255).round().astype(np.uint8)
+    sr_bgr = (sr_img[:, :, :3] * 255.0).round().clip(0, 255).astype(np.uint8)
     return sr_bgr, sr_4ch
 
 def run_model_b_inference(vis_bgrn: np.ndarray, enable_ensemble: bool = False):
@@ -446,25 +442,13 @@ def apply_unsharp_mask(
     threshold: int = 2
 ) -> np.ndarray:
     """
-    Applies high-frequency Unsharp Mask post-processing enhancement to Sentinel-2 super-resolved outputs.
-    Preserves fine building footprints, road networks, and terrain textures while suppressing ringing/halos.
+    Applies Adaptive CIELAB Luminance Unsharp Mask + CLAHE High-Frequency Detail Enhancement.
+    Preserves 100% chromaticity while penetrating atmospheric haze and boosting structural edges.
     """
-    if amount <= 0:
+    if amount <= 0 or img_bgr is None:
         return img_bgr
-
-    img_float = img_bgr.astype(np.float32)
-    blurred = cv2.GaussianBlur(img_float, (0, 0), sigmaX=max(0.1, radius), sigmaY=max(0.1, radius))
-    diff = img_float - blurred
-
-    if threshold > 0:
-        low_contrast_mask = np.abs(diff) < threshold
-        diff[low_contrast_mask] = 0.0
-
-    # Soft amplitude clipping to prevent bright/dark halos on sharp boundaries
-    diff = np.clip(diff, -40.0, 40.0)
-
-    sharpened = img_float + amount * diff
-    return np.clip(sharpened, 0.0, 255.0).round().astype(np.uint8)
+    detail_boost = amount * 0.25 if amount > 0.6 else amount
+    return apply_display_enhancement(img_bgr, detail_boost=detail_boost, radius=radius, enable_clahe=True)
 
 def compute_confidence_map(vis_bgrn: np.ndarray, sr_bgr: np.ndarray, num_passes: int = 6):
     """
@@ -601,10 +585,9 @@ async def upscale_bbox(req: BBoxRequest):
                 with memfile.open() as dataset:
                     raw_np = dataset.read().astype(np.float32)  # [4, H, W] in [0, 1]
             
-            # Pure physical BOA reflectance for scientific model inference (0% NIR clipping bug)
-            vis_bgrn = np.clip(raw_np, 0.0, 1.0)
-            # Display preview RGB stretched for human visual perception only
-            orig_bgr = np.clip(np.transpose(raw_np[:3, :, :], (1, 2, 0)) * 2.5 * 255.0, 0, 255).astype(np.uint8)
+            # Standard 2.8x Sentinel-2 visual scaling matching true ground conditions
+            vis_bgrn = np.clip(raw_np * 2.8 * 255.0, 0, 255).astype(np.uint8)
+            orig_bgr = np.transpose(vis_bgrn[:3, :, :], (1, 2, 0))
 
         except Exception as api_err:
             print(f"[Warning] Copernicus API fetch failed: {api_err}. Using calibrated regional tile representation...")
@@ -628,7 +611,7 @@ async def upscale_bbox(req: BBoxRequest):
         sr_bgr, sr_4ch = run_model_inference(vis_bgrn, enable_ensemble=use_ensemble)
         
         # Apply Post-Processing Unsharp Mask Sharpening
-        s_strength = req.sharpen_strength if req.sharpen_strength is not None else 1.8
+        s_strength = req.sharpen_strength if req.sharpen_strength is not None else 1.5
         s_radius = req.sharpen_radius if req.sharpen_radius is not None else 1.0
         s_thresh = req.sharpen_threshold if req.sharpen_threshold is not None else 2
         sr_bgr = apply_unsharp_mask(sr_bgr, radius=s_radius, amount=s_strength, threshold=s_thresh)
@@ -639,12 +622,13 @@ async def upscale_bbox(req: BBoxRequest):
         conf_score, conf_heatmap_bgr = compute_confidence_map(vis_bgrn, sr_bgr)
         conf_base64 = encode_bgr_to_base64_png(conf_heatmap_bgr)
 
-        # Compute Multispectral NDVI Canopy Analytics
-        ndvi_stats = compute_ndvi_analytics(sr_4ch)
-
         # Calibrated 4-band spectral overlays: Crop Health (NDVI 4-class) & Flood Extent (NDWI)
+        # Scaled back by 2.8 to obtain physical BOA reflectance in [0, 1]
+        sr_4ch_physical = np.clip(sr_4ch / 2.8, 0.0, 1.0)
+        ndvi_stats = compute_ndvi_analytics(sr_4ch_physical)
+
         # Bands: B02 Blue (0), B03 Green (1), B04 Red (2), B08 NIR (3)
-        blue, green, red, nir = sr_4ch[0], sr_4ch[1], sr_4ch[2], sr_4ch[3]
+        blue, green, red, nir = sr_4ch_physical[0], sr_4ch_physical[1], sr_4ch_physical[2], sr_4ch_physical[3]
         crop_res = crop_health_overlay(nir, red)
         flood_res = flood_extent_overlay(green, nir)
 
@@ -801,7 +785,7 @@ async def export_geotiff(req: BBoxRequest):
             with MemoryFile(raw_tiff_bytes) as memfile:
                 with memfile.open() as dataset:
                     raw_np = dataset.read().astype(np.float32)
-            vis_bgrn = np.clip(raw_np, 0.0, 1.0)
+            vis_bgrn = np.clip(raw_np * 2.8 * 255.0, 0, 255).astype(np.uint8)
         except Exception:
             rng = np.random.RandomState(int(abs(min_lat * 1000 + min_lon * 1000)) % 10000)
             base_pattern = rng.randint(40, 180, size=(pixel_h, pixel_w, 3), dtype=np.uint8)
@@ -813,7 +797,9 @@ async def export_geotiff(req: BBoxRequest):
         use_ensemble = bool(req.enable_ensemble)
         _, sr_4ch = run_model_inference(vis_bgrn, enable_ensemble=use_ensemble)  # [4, H*4, W*4] float32 in [0, 1]
 
-        tiff_bytes = serialize_sr_to_geotiff_bytes(sr_4ch, bbox)
+        # Convert back to true calibrated physical BOA reflectance
+        sr_4ch_physical = np.clip(sr_4ch / 2.8, 0.0, 1.0)
+        tiff_bytes = serialize_sr_to_geotiff_bytes(sr_4ch_physical, bbox)
 
         return StreamingResponse(
             io.BytesIO(tiff_bytes),
@@ -878,7 +864,7 @@ async def export_npy(req: BBoxRequest):
             with MemoryFile(raw_tiff_bytes) as memfile:
                 with memfile.open() as dataset:
                     raw_np = dataset.read().astype(np.float32)
-            vis_bgrn = np.clip(raw_np, 0.0, 1.0)
+            vis_bgrn = np.clip(raw_np * 2.8 * 255.0, 0, 255).astype(np.uint8)
         except Exception:
             rng = np.random.RandomState(int(abs(min_lat * 1000 + min_lon * 1000)) % 10000)
             base_pattern = rng.randint(40, 180, size=(pixel_h, pixel_w, 3), dtype=np.uint8)
@@ -890,7 +876,8 @@ async def export_npy(req: BBoxRequest):
         use_ensemble = bool(req.enable_ensemble)
         _, sr_4ch = run_model_inference(vis_bgrn, enable_ensemble=use_ensemble)
 
-        npy_bytes = serialize_sr_to_npy_bytes(sr_4ch)
+        sr_4ch_physical = np.clip(sr_4ch / 2.8, 0.0, 1.0)
+        npy_bytes = serialize_sr_to_npy_bytes(sr_4ch_physical)
         return StreamingResponse(
             io.BytesIO(npy_bytes),
             media_type="application/octet-stream",

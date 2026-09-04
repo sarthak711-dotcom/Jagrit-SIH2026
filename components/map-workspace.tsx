@@ -276,7 +276,7 @@ export function MapWorkspace() {
       height: 256,
       date_from: dates.date_from,
       date_to: dates.date_to,
-      sharpen_strength: dates.sharpen_strength ?? 1.8,
+      sharpen_strength: dates.sharpen_strength ?? 1.5,
       sharpen_radius: 1.0,
       sharpen_threshold: 2,
       enable_ensemble: dates.enable_ensemble ?? false,
