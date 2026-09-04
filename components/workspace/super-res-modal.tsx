@@ -71,7 +71,7 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
     const [isZoomed, setIsZoomed] = useState(false)
     const [isExportingGeoTIFF, setIsExportingGeoTIFF] = useState(false)
     const [isExportingNpy, setIsExportingNpy] = useState(false)
-    const [sharpenStrength, setSharpenStrength] = useState(1.5)
+    const [sharpenStrength, setSharpenStrength] = useState(1.8)
     const [sharpenedImage, setSharpenedImage] = useState(result.upscaledImage)
 
     const containerRef = useRef<HTMLDivElement>(null)
@@ -88,7 +88,7 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
             const h = img.height
             if (w === 0 || h === 0) return
 
-            if (sharpenStrength === 1.5) {
+            if (sharpenStrength === 1.8) {
                 setSharpenedImage(result.upscaledImage)
                 return
             }
@@ -132,7 +132,7 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
                 }
             }
 
-            const scale = sharpenStrength / 1.5
+            const scale = sharpenStrength / 1.8
             const threshold = 2
             for (let i = 0; i < data.length; i += 4) {
                 for (let c = 0; c < 3; c++) {
@@ -459,7 +459,7 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
                                 <img
                                     src={result.originalImage}
                                     alt="Original 10m Sentinel-2"
-                                    className="absolute inset-0 h-full w-full object-contain max-w-none pointer-events-none"
+                                    className="absolute inset-0 h-full w-full object-contain max-w-none pointer-events-none [image-rendering:pixelated]"
                                     style={{
                                         width: containerRef.current ? `${containerRef.current.clientWidth}px` : "100%",
                                         height: containerRef.current ? `${containerRef.current.clientHeight}px` : "100%",
@@ -513,7 +513,7 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
                                 <img
                                     src={result.originalImage}
                                     alt="Original 10m Sentinel-2"
-                                    className="h-full w-full object-contain"
+                                    className="h-full w-full object-contain [image-rendering:pixelated]"
                                 />
                                 <div className="p-2 bg-muted/30 border-t border-border font-mono text-[11px] text-center text-muted-foreground">
                                     Dim: {result.originalDimensions[0]} &times; {result.originalDimensions[1]} px

@@ -174,7 +174,7 @@ class BBoxRequest(BaseModel):
     height: Optional[int] = 256
     date_from: Optional[str] = "2024-05-01T00:00:00Z"
     date_to: Optional[str] = "2024-05-15T23:59:59Z"
-    sharpen_strength: Optional[float] = 1.5
+    sharpen_strength: Optional[float] = 1.8
     sharpen_radius: Optional[float] = 1.0
     sharpen_threshold: Optional[int] = 2
     enable_ensemble: Optional[bool] = False
@@ -446,14 +446,25 @@ def apply_unsharp_mask(
     threshold: int = 2
 ) -> np.ndarray:
     """
-    Compatibility wrapper delegating to Adaptive CIELAB Luminance + CLAHE detail engine.
-    Normalizes UI strength slider (0.0 to 3.0) to optimal photorealistic detail_boost (0.0 to 0.75).
+    Applies high-frequency Unsharp Mask post-processing enhancement to Sentinel-2 super-resolved outputs.
+    Preserves fine building footprints, road networks, and terrain textures while suppressing ringing/halos.
     """
     if amount <= 0:
         return img_bgr
-    # Map amount smoothly: standard default 1.5 -> 0.38 boost; custom 0.35 -> 0.35
-    detail_boost = amount * 0.25 if amount > 0.6 else amount
-    return apply_display_enhancement(img_bgr, detail_boost=detail_boost, radius=radius, enable_clahe=False)
+
+    img_float = img_bgr.astype(np.float32)
+    blurred = cv2.GaussianBlur(img_float, (0, 0), sigmaX=max(0.1, radius), sigmaY=max(0.1, radius))
+    diff = img_float - blurred
+
+    if threshold > 0:
+        low_contrast_mask = np.abs(diff) < threshold
+        diff[low_contrast_mask] = 0.0
+
+    # Soft amplitude clipping to prevent bright/dark halos on sharp boundaries
+    diff = np.clip(diff, -40.0, 40.0)
+
+    sharpened = img_float + amount * diff
+    return np.clip(sharpened, 0.0, 255.0).round().astype(np.uint8)
 
 def compute_confidence_map(vis_bgrn: np.ndarray, sr_bgr: np.ndarray, num_passes: int = 6):
     """
@@ -617,7 +628,7 @@ async def upscale_bbox(req: BBoxRequest):
         sr_bgr, sr_4ch = run_model_inference(vis_bgrn, enable_ensemble=use_ensemble)
         
         # Apply Post-Processing Unsharp Mask Sharpening
-        s_strength = req.sharpen_strength if req.sharpen_strength is not None else 1.5
+        s_strength = req.sharpen_strength if req.sharpen_strength is not None else 1.8
         s_radius = req.sharpen_radius if req.sharpen_radius is not None else 1.0
         s_thresh = req.sharpen_threshold if req.sharpen_threshold is not None else 2
         sr_bgr = apply_unsharp_mask(sr_bgr, radius=s_radius, amount=s_strength, threshold=s_thresh)
@@ -707,7 +718,7 @@ async def upscale_file(
 
         orig_base64 = encode_bgr_to_base64_png(img_bgr)
         sr_bgr, sr_4ch = run_model_inference(vis_bgrn, enable_ensemble=enable_ensemble)
-        sr_bgr = apply_unsharp_mask(sr_bgr, radius=1.0, amount=1.5, threshold=2)
+        sr_bgr = apply_unsharp_mask(sr_bgr, radius=1.0, amount=1.8, threshold=2)
         sr_base64 = encode_bgr_to_base64_png(sr_bgr)
 
         # Compute Bayesian Epistemic Uncertainty & Confidence Score via MC Dropout

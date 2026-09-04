@@ -52,7 +52,7 @@ export function RegionPanel({
   const [dateTo, setDateTo] = useState("2024-05-15")
 
   // Post-processing Unsharp Mask Sharpening
-  const [sharpenStrength, setSharpenStrength] = useState(1.5)
+  const [sharpenStrength, setSharpenStrength] = useState(1.8)
   // 8x Test-Time Self-Ensemble
   const [enableEnsemble, setEnableEnsemble] = useState(false)
 
@@ -307,11 +307,11 @@ export function RegionPanel({
             />
             <div className="flex items-center justify-between font-mono text-[9px] text-muted-foreground">
               <span>0.0 (Off)</span>
-              <span>1.5 (Default)</span>
+              <span>1.8 (Default)</span>
               <span>3.0 (Max)</span>
             </div>
             <p className="font-mono text-[9px] text-muted-foreground italic">
-              CIELAB Luminance Mask + Tile CLAHE &bull; Preserves color & eliminates ringing
+              Adaptive High-Frequency Unsharp Mask &bull; Preserves color &amp; enhances 2.5m structural edges
             </p>
           </div>
 
