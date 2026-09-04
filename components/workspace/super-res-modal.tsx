@@ -275,12 +275,12 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
                                 <button
                                     onClick={() => setViewMode("confidence")}
                                     className={`flex items-center gap-1.5 rounded px-2.5 py-1 font-mono text-xs transition-colors ${viewMode === "confidence"
-                                        ? "bg-emerald-600 text-white font-semibold shadow"
+                                        ? "bg-cyan-600 text-white font-semibold shadow"
                                         : "text-muted-foreground hover:text-foreground"
                                         }`}
                                 >
                                     <Activity className="h-3.5 w-3.5" />
-                                    Confidence Heatmap
+                                    MC Dropout Uncertainty
                                 </button>
                             )}
                             {result.ndviAnalytics && (
@@ -465,34 +465,34 @@ export function SuperResModal({ result, onClose, onOverlayOnMap }: SuperResModal
                             </div>
                         </div>
                     ) : (
-                        /* Confidence Heatmap View */
-                        <div className={`relative flex h-full w-full max-w-4xl flex-col items-center justify-center overflow-hidden rounded-lg border border-emerald-500/40 bg-black/50 ${isZoomed ? "scale-150 transition-transform duration-300" : ""}`}>
-                            <div className="absolute top-3 left-3 z-10 flex items-center gap-2 rounded bg-black/80 px-3 py-1.5 font-mono text-xs font-bold text-emerald-400 border border-emerald-500/40 backdrop-blur-sm">
+                        /* Bayesian MC Dropout Epistemic Uncertainty & Confidence View */
+                        <div className={`relative flex h-full w-full max-w-4xl flex-col items-center justify-center overflow-hidden rounded-lg border border-cyan-500/40 bg-black/50 ${isZoomed ? "scale-150 transition-transform duration-300" : ""}`}>
+                            <div className="absolute top-3 left-3 z-10 flex items-center gap-2 rounded bg-black/80 px-3 py-1.5 font-mono text-xs font-bold text-cyan-400 border border-cyan-500/40 backdrop-blur-sm">
                                 <Activity className="h-4 w-4" />
-                                2D Spatial Confidence & Reconstruction Heatmap ({confScore}%)
+                                Bayesian Epistemic Uncertainty &sigma;&sup2; (MC Dropout &bull; {confScore}% Mean Confidence)
                             </div>
 
                             {result.confidenceMap && (
                                 <img
                                     src={result.confidenceMap}
-                                    alt="AI Confidence Heatmap"
+                                    alt="Bayesian MC Dropout Uncertainty Heatmap"
                                     className="h-full w-full object-contain"
                                 />
                             )}
 
-                            {/* Confidence Map Color Legend */}
+                            {/* MC Dropout Variance Color Legend */}
                             <div className="absolute bottom-3 inset-x-6 z-10 flex items-center justify-between rounded bg-black/85 px-4 py-2 font-mono text-[11px] border border-border backdrop-blur-sm">
                                 <div className="flex items-center gap-2">
                                     <span className="h-3 w-3 rounded-full bg-cyan-400 border border-cyan-300" />
-                                    <span className="text-cyan-300 font-semibold">High AI Fidelity (95-100%)</span>
+                                    <span className="text-cyan-300 font-semibold">Deterministic & High Confidence (Low &sigma;&sup2;)</span>
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <span className="h-3 w-3 rounded-full bg-amber-400 border border-amber-300" />
-                                    <span className="text-amber-300 font-semibold">Moderate Structural Edges</span>
+                                    <span className="text-amber-300 font-semibold">Moderate Structural Variance</span>
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <span className="h-3 w-3 rounded-full bg-rose-500 border border-rose-400" />
-                                    <span className="text-rose-400 font-semibold">High Variance / Dynamic Change</span>
+                                    <span className="text-rose-400 font-semibold">High Epistemic Uncertainty (High &sigma;&sup2;)</span>
                                 </div>
                             </div>
                         </div>

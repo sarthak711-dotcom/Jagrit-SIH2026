@@ -3,6 +3,7 @@ import os
 import time
 import base64
 import math
+import copy
 import cv2
 import numpy as np
 import rasterio
@@ -142,6 +143,24 @@ if model_b:
 else:
     model_b = model
     print(f"[Notice] data120.pth not found; Model B using Model A ({os.path.basename(pth_path)}) fallback.")
+
+# Model MC (Monte Carlo Dropout model with spatial Dropout2d injected into RDB dense blocks)
+model_mc = copy.deepcopy(model)
+for m in model_mc.modules():
+    if m.__class__.__name__ == 'ResidualDenseBlock_5C':
+        def _make_mc_forward(m_ref):
+            def _mc_forward(x):
+                x1 = m_ref.lrelu(m_ref.conv1(x))
+                x2 = m_ref.lrelu(m_ref.conv2(torch.cat((x, x1), 1)))
+                x3 = m_ref.lrelu(m_ref.conv3(torch.cat((x, x1, x2), 1)))
+                x4 = m_ref.lrelu(m_ref.conv4(torch.cat((x, x1, x2, x3), 1)))
+                x5 = m_ref.conv5(torch.cat((x, x1, x2, x3, x4), 1))
+                x5 = torch.nn.functional.dropout2d(x5, p=0.05, training=True)
+                return x5 * 0.2 + x
+            return _mc_forward
+        m.forward = _make_mc_forward(m)
+model_mc.eval()
+print(f"Initialized Bayesian Monte Carlo Dropout Engine on device: {device}")
 
 # --- 2. Input Validation Schema ---
 class BBoxRequest(BaseModel):
@@ -379,35 +398,56 @@ def apply_unsharp_mask(
     sharpened = img_float + amount * diff
     return np.clip(sharpened, 0.0, 255.0).round().astype(np.uint8)
 
-def compute_confidence_map(orig_bgr: np.ndarray, sr_bgr: np.ndarray):
+def compute_confidence_map(vis_bgrn: np.ndarray, sr_bgr: np.ndarray, num_passes: int = 6):
     """
-    Computes AI reconstruction confidence score (%) and 2D spatial Confidence Heatmap.
-    Calculated relative to 0-255 8-bit dynamic range for accurate spectral fidelity scoring.
+    Computes Bayesian Epistemic Uncertainty & AI Reconstruction Confidence via Monte Carlo Dropout.
+    Runs T stochastic forward passes through model_mc with active Spatial Dropout2d.
+    Computes full-resolution per-pixel variance σ²(x, y) and generates a Turbo uncertainty heatmap.
     """
-    H, W, _ = orig_bgr.shape
-    # Downsample super-resolved output to original dimensions for spectral fidelity comparison
-    sr_down = cv2.resize(sr_bgr, (W, H), interpolation=cv2.INTER_AREA)
+    try:
+        model_input = vis_bgrn.astype(np.float32) / 255.0
+        input_tensor = torch.from_numpy(model_input).unsqueeze(0).to(device)
 
-    # Calculate absolute error per pixel across RGB channels
-    abs_diff = np.abs(orig_bgr.astype(np.float32) - sr_down.astype(np.float32))
-    err_map = np.mean(abs_diff, axis=2) # [H, W] (0 to 255)
+        with torch.no_grad():
+            preds = []
+            for _ in range(num_passes):
+                out = model_mc(input_tensor)
+                preds.append(out)
+            # Stack along passes: [num_passes, 1, 4, H*4, W*4]
+            preds_stack = torch.stack(preds, dim=0)
+            
+            # Epistemic variance across passes, averaged across RGB channels
+            var_tensor = preds_stack[:, :, :3, :, :].var(dim=0).mean(dim=1).squeeze(0)  # [H*4, W*4]
+            var_np = var_tensor.cpu().numpy()
 
-    # Standardized relative error normalized against 255 dynamic range
-    # 25.5 RGB level difference = 10% error = 90% confidence
-    rel_error = np.clip(err_map / 255.0, 0.0, 1.0)
-    
-    # Fidelity confidence grid
-    conf_grid = np.clip(1.0 - (rel_error * 2.5), 0.0, 1.0)
-    mean_conf_score = round(float(np.mean(conf_grid) * 100.0), 1)
+        # Rescale variance to normalized range [0.0, 1.0] (0.0 to 0.08 variance scale)
+        norm_var = np.clip(var_np / 0.065, 0.0, 1.0)
+        
+        # High confidence = Low epistemic variance
+        conf_grid = 1.0 - norm_var
+        mean_conf_score = round(float(np.mean(conf_grid) * 100.0), 1)
 
-    # Generate 2D Heatmap: Blue/Cyan = High Conf (90-100%), Yellow = Edge detail, Red = High variance
-    conf_u8 = ((1.0 - conf_grid) * 255.0).astype(np.uint8)
-    heatmap_bgr = cv2.applyColorMap(conf_u8, cv2.COLORMAP_TURBO)
-    
-    # Blend with original visual RGB image for context
-    blended = cv2.addWeighted(orig_bgr, 0.35, heatmap_bgr, 0.65, 0)
-    
-    return mean_conf_score, blended
+        # Generate full-resolution 2D heatmap: Turbo colormap (Cyan/Blue = High Confidence, Red = High Uncertainty)
+        unc_u8 = (norm_var * 255.0).astype(np.uint8)
+        heatmap_bgr = cv2.applyColorMap(unc_u8, cv2.COLORMAP_TURBO)
+
+        # Blend with high-res super-resolved image for rich structural context
+        blended = cv2.addWeighted(sr_bgr, 0.40, heatmap_bgr, 0.60, 0)
+        return mean_conf_score, blended
+
+    except Exception as err:
+        print(f"[Warning] MC Dropout uncertainty failed ({err}), falling back to downsampling diff.")
+        H, W, _ = sr_bgr.shape
+        orig_resized = cv2.resize(vis_bgrn[:3, :, :].transpose(1, 2, 0), (W, H))
+        abs_diff = np.abs(orig_resized.astype(np.float32) - sr_bgr.astype(np.float32))
+        err_map = np.mean(abs_diff, axis=2)
+        rel_error = np.clip(err_map / 255.0, 0.0, 1.0)
+        conf_grid = np.clip(1.0 - (rel_error * 2.5), 0.0, 1.0)
+        mean_conf_score = round(float(np.mean(conf_grid) * 100.0), 1)
+        conf_u8 = ((1.0 - conf_grid) * 255.0).astype(np.uint8)
+        heatmap_bgr = cv2.applyColorMap(conf_u8, cv2.COLORMAP_TURBO)
+        blended = cv2.addWeighted(sr_bgr, 0.40, heatmap_bgr, 0.60, 0)
+        return mean_conf_score, blended
 
 def encode_bgr_to_base64_png(bgr_img: np.ndarray) -> str:
     success, encoded = cv2.imencode(".png", bgr_img)
@@ -525,8 +565,8 @@ async def upscale_bbox(req: BBoxRequest):
 
         sr_base64 = encode_bgr_to_base64_png(sr_bgr)
 
-        # Compute AI Confidence Score & Confidence Heatmap Diff Map
-        conf_score, conf_heatmap_bgr = compute_confidence_map(orig_bgr, sr_bgr)
+        # Compute Bayesian Epistemic Uncertainty & Confidence Score via MC Dropout
+        conf_score, conf_heatmap_bgr = compute_confidence_map(vis_bgrn, sr_bgr)
         conf_base64 = encode_bgr_to_base64_png(conf_heatmap_bgr)
 
         # Compute Multispectral NDVI Canopy Analytics
@@ -581,7 +621,8 @@ async def upscale_file(
         sr_bgr = apply_unsharp_mask(sr_bgr, radius=1.0, amount=1.5, threshold=2)
         sr_base64 = encode_bgr_to_base64_png(sr_bgr)
 
-        conf_score, conf_heatmap_bgr = compute_confidence_map(img_bgr, sr_bgr)
+        # Compute Bayesian Epistemic Uncertainty & Confidence Score via MC Dropout
+        conf_score, conf_heatmap_bgr = compute_confidence_map(vis_bgrn, sr_bgr)
         conf_base64 = encode_bgr_to_base64_png(conf_heatmap_bgr)
 
         ndvi_stats = compute_ndvi_analytics(sr_4ch)
@@ -871,12 +912,12 @@ async def compare_models_bbox(req: BBoxRequest):
         s_radius = req.sharpen_radius if req.sharpen_radius is not None else 1.0
         s_thresh = req.sharpen_threshold if req.sharpen_threshold is not None else 2
         sr_a = apply_unsharp_mask(sr_a, radius=s_radius, amount=s_strength, threshold=s_thresh)
-        conf_score_a, _ = compute_confidence_map(orig_bgr, sr_a)
+        conf_score_a, _ = compute_confidence_map(vis_bgrn, sr_a)
 
         # Model B Inference
         sr_b, _ = run_model_b_inference(vis_bgrn)
         sr_b = apply_unsharp_mask(sr_b, radius=s_radius, amount=s_strength, threshold=s_thresh)
-        conf_score_b, _ = compute_confidence_map(orig_bgr, sr_b)
+        conf_score_b, _ = compute_confidence_map(vis_bgrn, sr_b)
 
         # Compute Model Output Discrepancy Heatmap
         diff_u8 = np.abs(sr_b.astype(np.float32) - sr_a.astype(np.float32))
