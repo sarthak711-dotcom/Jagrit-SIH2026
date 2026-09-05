@@ -324,29 +324,52 @@ def run_model_inference(vis_bgrn: np.ndarray, enable_ensemble: bool = False, tar
         model_input = vis_bgrn.astype(np.float32) / 255.0
     else:
         model_input = np.clip(vis_bgrn.astype(np.float32), 0.0, 1.0)
-    input_tensor = torch.from_numpy(model_input).unsqueeze(0).to(device)
 
-    with torch.no_grad():
-        if enable_ensemble:
-            # 8x D4 Dihedral Self-Ensemble
-            accum_sr = torch.zeros(
-                (1, 4, input_tensor.shape[2] * 4, input_tensor.shape[3] * 4),
-                device=device,
-                dtype=input_tensor.dtype
-            )
-            for mode in range(8):
-                aug_in = _apply_d4_transform(input_tensor, mode)
-                aug_out = curr_model(aug_in)
-                accum_sr += _apply_d4_inverse(aug_out, mode)
-            output_tensor = accum_sr / 8.0
-        else:
-            output_tensor = curr_model(input_tensor)
+    try:
+        input_tensor = torch.from_numpy(model_input).unsqueeze(0).to(device)
+        with torch.no_grad():
+            if enable_ensemble:
+                accum_sr = torch.zeros(
+                    (1, 4, input_tensor.shape[2] * 4, input_tensor.shape[3] * 4),
+                    device=device,
+                    dtype=input_tensor.dtype
+                )
+                for mode in range(8):
+                    aug_in = _apply_d4_transform(input_tensor, mode)
+                    aug_out = curr_model(aug_in)
+                    accum_sr += _apply_d4_inverse(aug_out, mode)
+                output_tensor = accum_sr / 8.0
+            else:
+                output_tensor = curr_model(input_tensor)
 
-        # Adaptive Radiometric BOA Reflectance Calibration
-        mean_lr = input_tensor.mean(dim=(2, 3), keepdim=True)
-        mean_sr = output_tensor.mean(dim=(2, 3), keepdim=True)
-        scale = (mean_lr / (mean_sr + 1e-8)).clamp(0.5, 2.0)
-        output_calibrated = (output_tensor * scale).clamp(0.0, 1.0)
+            # Adaptive Radiometric BOA Reflectance Calibration
+            mean_lr = input_tensor.mean(dim=(2, 3), keepdim=True)
+            mean_sr = output_tensor.mean(dim=(2, 3), keepdim=True)
+            scale = (mean_lr / (mean_sr + 1e-8)).clamp(0.5, 2.0)
+            output_calibrated = (output_tensor * scale).clamp(0.0, 1.0)
+    except Exception as run_err:
+        print(f"[Jagrit] Device inference failed on {device} ({run_err}). Falling back to CPU.")
+        cpu_model = curr_model.to("cpu")
+        input_tensor = torch.from_numpy(model_input).unsqueeze(0).to("cpu")
+        with torch.no_grad():
+            if enable_ensemble:
+                accum_sr = torch.zeros(
+                    (1, 4, input_tensor.shape[2] * 4, input_tensor.shape[3] * 4),
+                    device="cpu",
+                    dtype=input_tensor.dtype
+                )
+                for mode in range(8):
+                    aug_in = _apply_d4_transform(input_tensor, mode)
+                    aug_out = cpu_model(aug_in)
+                    accum_sr += _apply_d4_inverse(aug_out, mode)
+                output_tensor = accum_sr / 8.0
+            else:
+                output_tensor = cpu_model(input_tensor)
+
+            mean_lr = input_tensor.mean(dim=(2, 3), keepdim=True)
+            mean_sr = output_tensor.mean(dim=(2, 3), keepdim=True)
+            scale = (mean_lr / (mean_sr + 1e-8)).clamp(0.5, 2.0)
+            output_calibrated = (output_tensor * scale).clamp(0.0, 1.0)
 
     sr_4ch = output_calibrated.squeeze(0).cpu().numpy()  # [4, H*4, W*4]
     sr_img = np.transpose(sr_4ch, (1, 2, 0))  # [H*4, W*4, 4]
