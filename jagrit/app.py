@@ -98,8 +98,16 @@ class RRDBNet(nn.Module):
         out = self.conv_last(self.lrelu(self.conv_hr(fea)))
         return out
 
-# Initialize PyTorch Models: Model A (data.pth) and Model B (data120.pth)
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# Initialize PyTorch Models: Model A (best_model.pth) and Model B (data120.pth)
+try:
+    if torch.cuda.is_available():
+        _probe = torch.zeros(1, device="cuda")
+        device = torch.device('cuda')
+    else:
+        device = torch.device('cpu')
+except Exception as _e:
+    print(f"[Jagrit] CUDA probe failed ({_e}), falling back to CPU.")
+    device = torch.device('cpu')
 
 def load_rrdbnet_checkpoint(pth_filename: str):
     m = RRDBNet(in_nc=4, out_nc=4, nf=64, nb=23, gc=32).to(device)

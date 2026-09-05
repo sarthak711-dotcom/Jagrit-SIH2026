@@ -20,8 +20,6 @@ const BHUBANESWAR: [number, number] = [20.2961, 85.8245]
 const BACKEND_URLS = [
   "http://127.0.0.1:8000",
   "http://localhost:8000",
-  "http://127.0.0.1:8001",
-  "http://localhost:8001"
 ]
 
 const DEFAULT_LAYERS: LayersState = {
@@ -304,6 +302,7 @@ export function MapWorkspace() {
           } catch {
             errorMsg = `Server error ${res.status}`
           }
+          break
         }
       } catch (err: any) {
         errorMsg = err?.message || "Connection failed"
@@ -376,6 +375,7 @@ export function MapWorkspace() {
           } catch {
             errorMsg = `Server error ${res.status}`
           }
+          break
         }
       } catch (err: any) {
         errorMsg = err?.message || "Connection failed"
